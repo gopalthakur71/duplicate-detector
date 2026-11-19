@@ -6,6 +6,8 @@
 
 A desktop tool that finds duplicate files anywhere under a folder or drive, shows how much space the extra copies use, and lets **you** choose which copies to delete. Scanning never changes anything. Files are deleted only when you tick them and click **Delete**, and they go to the **Recycle Bin**, so you can restore them.
 
+![Main window after a scan: summary cards, and duplicate groups expanded to show each copy](docs/images/main-window.png)
+
 ## Features
 
 - **Exact duplicates, whatever their names:** files are compared by SHA-256 of their contents.
@@ -36,7 +38,7 @@ py -m pip install -r requirements.txt
 py app.py
 ```
 
-`requirements.txt` only adds the optional photo comparison. Exact duplicate detection needs nothing beyond the standard library.
+`requirements.txt` adds Send2Trash (Recycle Bin support) and the optional photo comparison (Pillow, ImageHash).
 
 ### As a package
 ```bash
@@ -49,7 +51,7 @@ duplicate-detector scan E:\ --csv report.csv --images
 
 1. Enter or browse to a folder. Use `E:\` to scan the whole drive.
 2. Optionally tick **Also compare photos for visual similarity**. Exact duplicate scanning is faster without it.
-3. Click **Scan for duplicates**. Use **Cancel scan** to stop at any time.
+3. Click **Scan for duplicates**. Use **Cancel** to stop at any time.
 4. Review the **Exact duplicates** and **Similar photos** tabs. Expand a group to see its files, click a column heading to sort, or type in **Filter** to narrow by path.
 5. Double-click a file to open it, or right-click for **Show in folder** and **Copy path**. Press Enter for details, including side-by-side previews of similar photos.
 6. **To delete copies:** click the box next to a file, or press Space, to select it. Click a group's box to select all its files, or use **Select all** and **Clear selection**. Then click **Delete selected…** and confirm.
@@ -57,6 +59,11 @@ duplicate-detector scan E:\ --csv report.csv --images
    - If you selected *every* copy of a file, it warns you and offers **Keep one copy of each**, which keeps the oldest copy.
    - Files go to the Recycle Bin. Files that changed or disappeared since the scan are skipped.
    - A log of everything moved is kept in `%APPDATA%\DuplicateDetector\deletion_log.csv`.
+
+   ![Extra copies ticked for deletion: selected files are shown in red, with a live count and a Delete selected button](docs/images/select-and-delete.png)
+
+   ![Delete confirmation listing every file, warning that every copy is selected, and offering Keep one copy of each](docs/images/confirm-delete.png)
+
 7. Click **Export report (CSV)** to save the full results. Deleted files are marked in the `notes` column.
 
 Shortcuts: **Enter** to scan, **Esc** to cancel, **Ctrl+F** to filter, **Ctrl+E** to export. The last folder and options are remembered in `%APPDATA%\DuplicateDetector\settings.json`.

@@ -26,4 +26,5 @@ repos:
     hooks:
       - id: mypy
         args: []
+        files: ^(src|tests)/
         additional_dependencies: ["Pillow>=13.0", "pytest>=9.2", "Send2Trash>=2.2.0", "types-Send2Trash>=2.2.0"]

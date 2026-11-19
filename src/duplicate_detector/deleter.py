@@ -54,28 +54,19 @@ class DeleteOutcome:
 
 
 # ----------------------------------------------------------- platform trash
-def has_recycle_bin(path: str) -> bool:
-    """Whether files on this path's drive can be recycled instead of destroyed."""
-    if sys.platform != "win32":
-        return True  # send2trash uses the per-volume XDG / macOS Trash
-    import ctypes
-
-    drive = os.path.splitdrive(os.path.abspath(path))[0]
-    if not drive:
-        return False
-    root = drive if drive.startswith("\\\\") else drive + "\\"
-    if root.startswith("\\\\") and not root.endswith("\\"):
-        root += "\\"
-    drive_fixed = 3  # removable (2), network (4), CD (5) and RAM disks (6) have no Recycle Bin
-    return bool(ctypes.windll.kernel32.GetDriveTypeW(root) == drive_fixed)
-
-
-def _windows_recycle(path: str) -> None:
-    """Recycle one file with SHFileOperationW, asking before any permanent delete."""
+# Platform code is defined in top-level sys.platform blocks so type checkers on
+# every OS understand which branch applies.
+if sys.platform == "win32":
     import ctypes
     from ctypes import wintypes
 
-    class SHFILEOPSTRUCTW(ctypes.Structure):
+    _DRIVE_FIXED = 3  # removable (2), network (4), CD (5) and RAM disks (6) have no Recycle Bin
+    _FO_DELETE = 3
+    _FOF_SILENT, _FOF_NOCONFIRMATION, _FOF_ALLOWUNDO = 0x4, 0x10, 0x40
+    # Overrides NOCONFIRMATION for files that would be destroyed rather than recycled.
+    _FOF_WANTNUKEWARNING = 0x4000
+
+    class _SHFILEOPSTRUCTW(ctypes.Structure):
         _fields_ = (
             ("hwnd", wintypes.HWND),
             ("wFunc", wintypes.UINT),
@@ -87,29 +78,36 @@ def _windows_recycle(path: str) -> None:
             ("lpszProgressTitle", wintypes.LPCWSTR),
         )
 
-    fo_delete = 3
-    fof_silent, fof_noconfirmation, fof_allowundo = 0x4, 0x10, 0x40
-    # Overrides NOCONFIRMATION for files that would be destroyed rather than recycled.
-    fof_wantnukewarning = 0x4000
-    op = SHFILEOPSTRUCTW()
-    op.wFunc = fo_delete
-    op.pFrom = os.path.abspath(path) + "\0"  # the API wants a double-NUL-terminated list
-    op.fFlags = fof_allowundo | fof_noconfirmation | fof_wantnukewarning | fof_silent
-    code = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
-    if code != 0:
-        raise OSError(f"Windows could not recycle the file (error {code:#x})")
-    if op.fAnyOperationsAborted:
-        raise OSError("not deleted: Windows would have deleted it permanently and you declined")
-    if os.path.lexists(path):
-        raise OSError("the file is still there after recycling")
+    def has_recycle_bin(path: str) -> bool:
+        """Whether files on this path's drive can be recycled instead of destroyed."""
+        drive = os.path.splitdrive(os.path.abspath(path))[0]
+        if not drive:
+            return False
+        root = drive if drive.endswith("\\") else drive + "\\"
+        return bool(ctypes.windll.kernel32.GetDriveTypeW(root) == _DRIVE_FIXED)
 
+    def default_trash(path: str) -> None:
+        """Recycle one file with SHFileOperationW, asking before any permanent delete."""
+        op = _SHFILEOPSTRUCTW()
+        op.wFunc = _FO_DELETE
+        op.pFrom = os.path.abspath(path) + "\0"  # the API wants a double-NUL-terminated list
+        op.fFlags = _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_WANTNUKEWARNING | _FOF_SILENT
+        code = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        if code != 0:
+            raise OSError(f"Windows could not recycle the file (error {code:#x})")
+        if op.fAnyOperationsAborted:
+            raise OSError("not deleted: Windows would have deleted it permanently and you declined")
+        if os.path.lexists(path):
+            raise OSError("the file is still there after recycling")
 
-def default_trash(path: str) -> None:
-    if sys.platform == "win32":
-        _windows_recycle(path)
-    else:
-        from send2trash import send2trash
+else:
+    from send2trash import send2trash
 
+    def has_recycle_bin(path: str) -> bool:
+        """send2trash uses the per-volume XDG Trash or the macOS Trash."""
+        return True
+
+    def default_trash(path: str) -> None:
         send2trash(path)
 
 
