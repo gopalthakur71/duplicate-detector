@@ -96,6 +96,11 @@ warn_unreachable = true
 module = ["imagehash", "imagehash.*"]
 ignore_missing_imports = true
 
+# Several ttk methods (Notebook.tab/select/index) are unannotated in typeshed.
+[[tool.mypy.overrides]]
+module = ["duplicate_detector.gui", "tests.test_gui"]
+disallow_untyped_calls = false
+
 # ------------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
 minversion = "9.0"

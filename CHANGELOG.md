@@ -6,6 +6,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- Redesigned window: colored buttons with hover states (blue Scan, red Cancel, green Export), a header bar, and summary cards for files, duplicate groups, extra space, similar pairs and unreadable items.
+- Results are expandable groups with one row per file. Click a column heading to sort, or type to filter by path.
+- Double-click a file to open it. Right-click for **Show in folder**, **Open file** and **Copy path**.
+- The similar-photo details window shows both thumbnails side by side.
+- **View errors** window, elapsed-time display, and scan percentage.
+- Keyboard shortcuts: Enter (scan), Esc (cancel), Ctrl+F (filter), Ctrl+E (export).
+- The last folder and photo option are remembered (`%APPDATA%\DuplicateDetector\settings.json`).
+- Asks before quitting while a scan is running. Sharp text and correctly scaled sizes on high-DPI screens.
+- Programs, scripts and shortcuts (`.exe`, `.bat`, `.ps1`, `.lnk`…) are never run by a double-click. The app asks first and shows the file in its folder instead.
+- File rows are built only when a group is opened, so sorting and filtering stay fast on large scans and keep expanded groups and the selection. Photo previews load in the background.
+
+### Fixed
+- The progress bar showed empty when a scan finished.
+- The **Browse…** button could be pushed off-screen by the fixed-width path box.
+
+### Changed
+- CI: pinned `astral-sh/setup-uv` to an exact release (`v10.3.3`), because it publishes no `v10` major tag.
+
 ## [0.2.0] - 2026-11-19
 
 ### Added

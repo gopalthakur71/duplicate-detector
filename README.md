@@ -49,8 +49,11 @@ duplicate-detector scan E:\ --csv report.csv --images
 1. Enter or browse to a folder. Use `E:\` to scan the whole drive.
 2. Optionally tick **Also compare photos for visual similarity**. Exact duplicate scanning is faster without it.
 3. Click **Scan for duplicates**. Use **Cancel scan** to stop at any time.
-4. Review the **Exact duplicates** and **Similar photos** tabs, and open a row for details.
-5. Click **Export report (CSV)** to save the full results.
+4. Review the **Exact duplicates** and **Similar photos** tabs. Expand a group to see its files, click a column heading to sort, or type in **Filter** to narrow by path.
+5. Double-click a file to open it, or right-click for **Show in folder** and **Copy path**. Press Enter for details, including side-by-side previews of similar photos.
+6. Click **Export report (CSV)** to save the full results.
+
+Shortcuts: **Enter** to scan, **Esc** to cancel, **Ctrl+F** to filter, **Ctrl+E** to export. The last folder and options are remembered in `%APPDATA%\DuplicateDetector\settings.json`, the only file the app writes besides the reports you export.
 
 ### Command line
 
