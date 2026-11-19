@@ -265,12 +265,15 @@ class DuplicateDetectorApp:
 
         default_root = "E:\\" if os.name == "nt" else os.path.expanduser("~")
         saved = settings.get("folders")
-        if isinstance(saved, list) and saved and all(isinstance(x, str) for x in saved):
-            folders = list(saved)
+        if isinstance(saved, list) and all(isinstance(x, str) for x in saved):
+            folders = saved  # may be empty: the user removed every folder
         else:
             folders = [settings.get("last_folder") or default_root]
         #: Folders to scan together (each with all its subfolders).
-        self.folders: list[str] = folders
+        self.folders: list[str] = []
+        for folder in folders:
+            self._add_unique(folder)
+        self._skipped_roots: list[tuple[str, str]] = []
         #: Text box for typing a folder to add.
         self.scan_root = tk.StringVar(value="")
         #: Only show duplicates found in more than one of the chosen folders.
@@ -695,10 +698,13 @@ class DuplicateDetectorApp:
         self.add_folder(text)
         self.scan_root.set("")
 
-    def add_folder(self, path: str) -> None:
+    def _add_unique(self, path: str) -> None:
         path = os.path.normpath(os.path.abspath(path))
         if all(os.path.normcase(path) != os.path.normcase(f) for f in self.folders):
             self.folders.append(path)
+
+    def add_folder(self, path: str) -> None:
+        self._add_unique(path)
         self._render_chips()
         self._update_across_check()
 
@@ -734,7 +740,7 @@ class DuplicateDetectorApp:
             chip.pack(side="left", padx=(0, 6))
             text = path if len(path) <= 48 else "…" + path[-47:]
             if nested:
-                text += "  (inside another folder)"
+                text += "  (already covered by another folder)"
             tk.Label(
                 chip, text=text, font=FONT_SMALL, bg=C.group_row, fg=C.muted if nested else C.text
             ).pack(side="left", padx=(8, 2), pady=2)
@@ -755,8 +761,27 @@ class DuplicateDetectorApp:
             self.across_check.state(["disabled"])
 
     def _on_across_toggled(self) -> None:
+        hidden = self._untick_hidden()
         self._refresh_results()
         self._update_stats()
+        if hidden:
+            self.detail_var.set(
+                f"Unticked {hidden:,} selected files that this option hides, so nothing you "
+                "can't see gets deleted."
+            )
+
+    def _visible_paths(self) -> set[str]:
+        view = self._view()
+        return {r.path for g in view.exact_groups for r in g} | {
+            r.path for p in view.similar_pairs for r in (p.left, p.right)
+        }
+
+    def _untick_hidden(self) -> int:
+        """Unselect files that are no longer listed; returns how many were unselected."""
+        hidden = self.selected - self._visible_paths()
+        if hidden:
+            self.set_selected(list(hidden), False)
+        return len(hidden)
 
     def _across(self) -> bool:
         return self.across_only.get() and len(self.result.roots) > 1
@@ -938,8 +963,8 @@ class DuplicateDetectorApp:
         if len(result.roots) > 1:
             across = len(result.across_folders().exact_groups)
             detail += f"  {across:,} groups have copies in more than one folder."
-        for inner, outer in getattr(self, "_skipped_roots", []):
-            detail += f"  {inner} is inside {outer}, so it was scanned once."
+        for inner, outer in self._skipped_roots:
+            detail += f"  {inner} is inside (or the same as) {outer}, so it was scanned once."
         if result.errors:
             detail += f"  {len(result.errors):,} items could not be read (see View errors)."
         self.detail_var.set(detail)
@@ -1080,7 +1105,7 @@ class DuplicateDetectorApp:
         for idx, pair in pairs:
             if needle and not any(needle in r.path.lower() for r in (pair.left, pair.right)):
                 continue
-            if across and pair.left.source == pair.right.source:
+            if across and not spans_folders((pair.left, pair.right)):
                 continue
             num = self._pair_num.get(_pair_key(pair), idx + 1)
             iid = f"p{num}"
@@ -1137,7 +1162,7 @@ class DuplicateDetectorApp:
 
     def _update_tab_titles(self, needle: str = "") -> None:
         def title(name: str, shown: int, total: int) -> str:
-            if needle and shown != total:
+            if (needle or self._across()) and shown != total:
                 return f"{name}  ({shown:,} of {total:,})"
             return f"{name}  ({total:,})"
 
@@ -1231,17 +1256,21 @@ class DuplicateDetectorApp:
     def select_copies_in(self, root: str) -> None:
         """Select files in ``root`` that also have a copy in another chosen folder.
 
-        Only exact duplicates count, and a copy outside ``root`` always stays
-        unselected, so this never selects every copy of a file.
+        Only exact duplicates count. A group is skipped unless at least one copy
+        outside ``root`` is still unselected, so (even after earlier selections)
+        this never leaves a group with every copy selected. With filter text,
+        only matching files are selected, like Select all.
         """
         needle = self.filter_var.get().strip().lower()
         paths: list[str] = []
         for group in self._view().exact_groups:
-            if needle and not any(needle in r.path.lower() for r in group):
-                continue
             inside = [r for r in group if r.source == root]
-            if inside and len(inside) < len(group):
-                paths.extend(r.path for r in inside)
+            outside = [r for r in group if r.source != root]
+            if not inside or not outside:
+                continue
+            if all(r.path in self.selected for r in outside):
+                continue  # selecting these would leave no copy
+            paths.extend(r.path for r in inside if not needle or needle in r.path.lower())
         self.set_selected(paths, True)
         self.notebook.select(0)
         if not paths:
@@ -1347,8 +1376,7 @@ class DuplicateDetectorApp:
         apply_deletions(self.result, deleted)
         # Keep ticks only on files that are still listed (e.g. ones that failed and still
         # have a group); a hidden ticked file could otherwise be deleted later by surprise.
-        listed = {r.path for g in self._all_groups() for r in g}
-        self.selected &= listed - {r.path for r in outcome.changed}
+        self.selected &= self._visible_paths() - {r.path for r in outcome.changed}
         self._end_delete()
         self._refresh_results()
         self._update_stats()
@@ -1716,7 +1744,10 @@ class DuplicateDetectorApp:
         if not path:
             return
         try:
-            write_csv(self.result, path)
+            # Export what is shown; with the cross-folder option, files of within-folder
+            # groups are noted rather than looking unique.
+            within = [g for g in self.result.exact_groups if not spans_folders(g)]
+            write_csv(self._view(), path, within_one_folder=within if self._across() else [])
         except OSError as exc:
             messagebox.showerror("Export failed", str(exc))
             return

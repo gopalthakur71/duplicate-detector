@@ -148,16 +148,30 @@ def without_survivor(
     """Selected paths whose group would keep no intact copy.
 
     Only partly selected groups are checked: there the user meant to keep some
-    copies, so if all of those have changed or vanished since the scan, deleting
-    the selected ones would remove the last intact copy.
+    copies. A kept copy only counts if it is unchanged since the scan *and* is a
+    physically different file (not the same file reached through a junction,
+    symlink or subst drive). Otherwise deleting the selected files could remove
+    the last real copy.
     """
     unsafe: set[str] = set()
     for group in groups:
         picked = [r for r in group if r.path in selected]
         kept = [r for r in group if r.path not in selected]
-        if picked and kept and not any(unchanged(r) for r in kept):
+        if not picked or not kept:
+            continue
+        survivors = [
+            k for k in kept if unchanged(k) and not any(_same_file(k.path, p.path) for p in picked)
+        ]
+        if not survivors:
             unsafe.update(r.path for r in picked)
     return unsafe
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 # ------------------------------------------------------------------ delete

@@ -5,10 +5,11 @@ from __future__ import annotations
 import csv
 import os
 from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import TextIO
 
-from .scanner import ScanResult
+from .scanner import FileRecord, ScanResult
 
 FIELDS = [
     "source",
@@ -40,20 +41,31 @@ def default_report_name(now: datetime | None = None) -> str:
     return f"duplicate_report_{(now or datetime.now()):%Y%m%d_%H%M%S}.csv"
 
 
-def write_csv(result: ScanResult, out: str | os.PathLike[str] | TextIO) -> None:
+NOTE_WITHIN_ONE_FOLDER = "duplicate within one folder only (left out by the cross-folder option)"
+
+
+def write_csv(
+    result: ScanResult,
+    out: str | os.PathLike[str] | TextIO,
+    *,
+    within_one_folder: Iterable[Sequence[FileRecord]] = (),
+) -> None:
     """Write one row per scanned file, followed by one ``ERROR`` row per read error.
 
     ``out`` may be a path or an open text file (opened with ``newline=""``).
     Paths are written as UTF-8 with a BOM so Excel opens them correctly.
+    ``within_one_folder`` are duplicate groups left out of ``result`` by the
+    cross-folder option; their files get a note so they don't look unique.
     """
+    hidden = {r.path for g in within_one_folder for r in g}
     if isinstance(out, (str, os.PathLike)):
         with open(out, "w", newline="", encoding="utf-8-sig") as f:
-            _write(result, f)
+            _write(result, f, hidden)
     else:
-        _write(result, out)
+        _write(result, out, hidden)
 
 
-def _write(result: ScanResult, f: TextIO) -> None:
+def _write(result: ScanResult, f: TextIO, hidden: set[str]) -> None:
     exact_map: dict[str, int] = {}
     for group_id, group in enumerate(result.exact_groups, 1):
         for rec in group:
@@ -78,7 +90,7 @@ def _write(result: ScanResult, f: TextIO) -> None:
                 "sha256": r.sha256 or "",
                 "exact_duplicate_group": exact_map.get(r.path, ""),
                 "possible_visual_matches": "; ".join(similar_map.get(r.path, [])),
-                "notes": safe_cell(r.note),
+                "notes": safe_cell(r.note or (NOTE_WITHIN_ONE_FOLDER if r.path in hidden else "")),
             }
         )
     for err in result.errors:

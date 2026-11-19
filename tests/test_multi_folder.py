@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tkinter as tk
 from collections.abc import Iterator
 from pathlib import Path
@@ -89,7 +90,7 @@ def test_cli_across_folders_needs_two(
     two_folders: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert cli.main(["scan", str(two_folders[0]), "--across-folders"]) == 2
-    assert "at least two folders" in capsys.readouterr().err
+    assert "at least two separate folders" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------- GUI
@@ -152,3 +153,121 @@ def test_gui_select_copies_in_folder_never_selects_every_copy(
     # Both Photos copies of the beach photo; the notes pair exists only in Photos, so
     # it is skipped (selecting it would remove every copy).
     assert {Path(p).name for p in multi_app.selected} == {"beach.jpg", "beach copy.jpg"}
+
+
+# ------------------------------------------------- code review regressions
+def test_same_folder_through_a_junction_is_scanned_once(
+    two_folders: tuple[Path, Path], tmp_path: Path
+) -> None:
+    photos, _ = two_folders
+    alias = tmp_path / "PhotosAlias"
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(photos), str(alias))
+    else:
+        alias.symlink_to(photos, target_is_directory=True)
+
+    roots, skipped = normalize_roots([photos, alias])
+    result = scan([photos, alias])
+
+    assert roots == [str(photos)]
+    assert skipped == [(str(alias), str(photos))]
+    assert sorted(len(g) for g in result.exact_groups) == [2, 2]  # nothing duplicates itself
+
+
+def test_hard_link_is_not_a_surviving_copy(tmp_path: Path) -> None:
+    from duplicate_detector.deleter import without_survivor
+    from duplicate_detector.scanner import FileRecord
+
+    real = tmp_path / "real.jpg"
+    real.write_bytes(b"one physical file")
+    link = tmp_path / "link.jpg"
+    os.link(real, link)
+    st = real.stat()
+    recs = [
+        FileRecord(source="", path=str(p), size=st.st_size, mtime=st.st_mtime) for p in (real, link)
+    ]
+
+    # Deleting one name while "keeping" the other would remove the only real copy.
+    assert without_survivor([recs], {str(link)}) == {str(link)}
+
+
+def test_cli_rejects_across_folders_for_nested_folders(
+    two_folders: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    photos, _ = two_folders
+    assert cli.main(["scan", str(photos), str(photos / "2024"), "--across-folders"]) == 2
+    assert "two separate folders" in capsys.readouterr().err
+
+
+def test_cli_across_report_notes_within_folder_duplicates(
+    two_folders: tuple[Path, Path], tmp_path: Path
+) -> None:
+    import csv
+
+    out = tmp_path / "r.csv"
+    cli.main(["scan", *map(str, two_folders), "--across-folders", "--csv", str(out), "-q"])
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = {r["filename"]: r for r in csv.DictReader(f)}
+
+    assert rows["notes.txt"]["exact_duplicate_group"] == ""
+    assert "within one folder" in rows["notes.txt"]["notes"]
+    assert rows["beach.jpg"]["exact_duplicate_group"] == "1"
+
+
+def test_gui_across_option_unticks_hidden_files(
+    multi_app: gui.DuplicateDetectorApp, two_folders: tuple[Path, Path]
+) -> None:
+    multi_app._show_results(scan(list(two_folders)))
+    notes = next(g for g in multi_app.result.exact_groups if not spans_folders(g))
+    multi_app.set_selected([notes[0].path], True)
+
+    multi_app.across_only.set(True)
+    multi_app._on_across_toggled()
+
+    assert multi_app.selected == set()
+    assert "(1 of 2)" in multi_app.notebook.tab(0, "text")
+
+
+def test_gui_select_copies_in_twice_never_selects_every_copy(
+    multi_app: gui.DuplicateDetectorApp, two_folders: tuple[Path, Path]
+) -> None:
+    photos, backup = two_folders
+    multi_app._show_results(scan([photos, backup]))
+
+    multi_app.select_copies_in(str(photos))
+    multi_app.select_copies_in(str(backup))
+
+    beach = next(g for g in multi_app.result.exact_groups if spans_folders(g))
+    assert not all(r.path in multi_app.selected for r in beach)
+
+
+def test_gui_select_copies_in_respects_filter(
+    multi_app: gui.DuplicateDetectorApp, two_folders: tuple[Path, Path]
+) -> None:
+    photos, backup = two_folders
+    multi_app._show_results(scan([photos, backup]))
+    multi_app.filter_var.set("deep")
+    multi_app._refresh_results()
+
+    multi_app.select_copies_in(str(photos))
+
+    assert {Path(p).name for p in multi_app.selected} == {"beach copy.jpg"}
+
+
+def test_gui_empty_folder_list_is_remembered(tk_root: tk.Tk, tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    first = gui.DuplicateDetectorApp(tk_root, settings_file=settings)
+    first.folders = []
+    first._save_settings()
+    for child in tk_root.winfo_children():
+        child.destroy()
+
+    second = gui.DuplicateDetectorApp(tk_root, settings_file=settings)
+
+    assert second.folders == []
+    for job in tk_root.tk.splitlist(tk_root.tk.call("after", "info")):
+        tk_root.after_cancel(job)
+    for child in tk_root.winfo_children():
+        child.destroy()

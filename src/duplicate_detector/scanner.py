@@ -97,7 +97,7 @@ class ScanResult:
         return ScanResult(
             records=self.records,
             exact_groups=[g for g in self.exact_groups if spans_folders(g)],
-            similar_pairs=[p for p in self.similar_pairs if p.left.source != p.right.source],
+            similar_pairs=[p for p in self.similar_pairs if spans_folders((p.left, p.right))],
             errors=self.errors,
             roots=self.roots,
         )
@@ -259,7 +259,9 @@ class _Throttle:
 
 
 def _norm(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    # realpath resolves junctions, symlinks and subst/mapped drives, so two paths to the
+    # same physical folder compare equal (otherwise every file would "duplicate" itself).
+    return os.path.normcase(os.path.realpath(path))
 
 
 def is_inside(path: str, folder: str) -> bool:
@@ -276,17 +278,22 @@ def normalize_roots(
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Return ``(roots_to_scan, skipped)``.
 
-    Duplicate entries and folders nested inside another chosen folder are
-    skipped (their files are scanned once, as part of the outer folder).
-    ``skipped`` holds ``(skipped_folder, containing_folder)`` pairs.
+    Duplicate entries, other paths to the same physical folder (junctions,
+    symlinks, subst drives) and folders nested inside another chosen folder are
+    skipped: their files are scanned once, as part of the other folder.
+    ``skipped`` holds ``(skipped_folder, kept_folder)`` pairs; a repeat of the
+    exact same path is dropped without being listed.
     """
     unique: list[str] = []
+    skipped: list[tuple[str, str]] = []
     for root in roots:
         path = os.path.abspath(os.fspath(root))
-        if all(_norm(path) != _norm(u) for u in unique):
+        same = next((u for u in unique if _norm(path) == _norm(u)), None)
+        if same is None:
             unique.append(path)
+        elif os.path.normcase(path) != os.path.normcase(same):
+            skipped.append((path, same))  # an alias of a folder already chosen
     keep: list[str] = []
-    skipped: list[tuple[str, str]] = []
     for path in unique:
         outer = next((o for o in unique if o != path and is_inside(path, o)), None)
         if outer is None:

@@ -17,11 +17,13 @@ from . import __version__
 from .report import default_report_name, write_csv
 from .scanner import (
     IMAGE_HASH_AVAILABLE,
+    FileRecord,
     Progress,
     ScanCancelled,
     human_size,
     normalize_roots,
     scan,
+    spans_folders,
 )
 
 
@@ -76,12 +78,18 @@ def _run_scan(args: argparse.Namespace) -> int:
         if not os.path.isdir(path):
             print(f"error: not a folder or cannot be accessed: {path}", file=sys.stderr)
             return 2
-    if args.across_folders and len(args.paths) < 2:
-        print("error: --across-folders needs at least two folders", file=sys.stderr)
-        return 2
     roots, skipped = normalize_roots(args.paths)
     for inner, outer in skipped:
-        print(f"note: {inner} is inside {outer}; scanning it once", file=sys.stderr)
+        print(
+            f"note: {inner} is inside (or the same as) {outer}; scanning it once", file=sys.stderr
+        )
+    if args.across_folders and len(roots) < 2:
+        print(
+            "error: --across-folders needs at least two separate folders "
+            "(not the same folder twice, or one inside the other)",
+            file=sys.stderr,
+        )
+        return 2
     if args.images and not IMAGE_HASH_AVAILABLE:
         print(
             "error: photo comparison needs Pillow and ImageHash: "
@@ -102,10 +110,12 @@ def _run_scan(args: argparse.Namespace) -> int:
     if not args.quiet:
         print(file=sys.stderr)
 
+    within_one_folder: list[list[FileRecord]] = []
     if args.across_folders:
+        within_one_folder = [g for g in result.exact_groups if not spans_folders(g)]
         result = result.across_folders()
     out = args.csv or default_report_name()
-    write_csv(result, out)
+    write_csv(result, out, within_one_folder=within_one_folder)
     print(
         f"Scanned {len(result.records):,} files in {len(roots)} folder(s). "
         f"{len(result.exact_groups):,} exact duplicate groups "
