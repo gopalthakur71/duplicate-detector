@@ -6,7 +6,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
 ### Added
+- **Scan several folders together,** even on different drives. Each folder includes all its subfolders. Duplicates are found across all of them and within each one. Add folders by typing, with **+ Add**, or with **Browse…**, and remove them with ✕. A folder inside another chosen folder is only scanned once.
+- **Found in** column showing which chosen folder each copy is in.
+- **Only show duplicates found in more than one of these folders** option (for example, what in Backup is already in Photos). Stats follow the option.
+- **Select copies in ▾** menu: selects every copy inside one chosen folder that also exists in another folder. It never selects every copy of a file.
+- Command line: `duplicate-detector scan E:\Photos D:\Backup --across-folders`.
 - **Delete duplicates you choose.** Every file row has a checkbox. Tick files one at a time, tick a group to select all its files, or use **Select all** and **Clear selection**. A live counter shows how many files and bytes are selected.
 - **Delete selected…** moves the selected files to the Recycle Bin after a confirmation that lists every file. Nothing is selected or deleted automatically.
   - If every copy in a group is selected, the confirmation warns you and offers **Keep one copy of each**, which keeps the oldest copy.
@@ -22,7 +29,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - The similar-photo details window shows both thumbnails side by side.
 - **View errors** window, elapsed-time display, and scan percentage.
 - Keyboard shortcuts: Enter (scan), Esc (cancel), Ctrl+F (filter), Ctrl+E (export).
-- The last folder and photo option are remembered (`%APPDATA%\DuplicateDetector\settings.json`).
+- The chosen folders and photo option are remembered (`%APPDATA%\DuplicateDetector\settings.json`).
 - Asks before quitting while a scan is running. Sharp text and correctly scaled sizes on high-DPI screens.
 - Programs, scripts and shortcuts (`.exe`, `.bat`, `.ps1`, `.lnk`…) are never run by a double-click. The app asks first and shows the file in its folder instead.
 - File rows are built only when a group is opened, so sorting and filtering stay fast on large scans and keep expanded groups and the selection. Photo previews load in the background.
@@ -61,5 +68,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 - Initial release: a read-only Tkinter app that finds exact duplicates by SHA-256, finds similar photos with optional pHash matching, and exports a CSV report.
 
-[Unreleased]: https://github.com/gopalthakur71/duplicate-detector/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/gopalthakur71/duplicate-detector/releases/tag/v0.2.0
+[Unreleased]: https://github.com/gopalthakur71/duplicate-detector/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gopalthakur71/duplicate-detector/releases/tag/v0.3.0
+[0.2.0]: https://github.com/gopalthakur71/duplicate-detector/tree/ef1e6ec

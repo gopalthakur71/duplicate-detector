@@ -3,6 +3,7 @@
 duplicate-detector                 # open the GUI
 duplicate-detector gui             # open the GUI
 duplicate-detector scan E:\\ --csv report.csv [--images]
+duplicate-detector scan E:\\Photos D:\\Backup --across-folders
 """
 
 from __future__ import annotations
@@ -14,7 +15,16 @@ from collections.abc import Sequence
 
 from . import __version__
 from .report import default_report_name, write_csv
-from .scanner import IMAGE_HASH_AVAILABLE, Progress, ScanCancelled, human_size, scan
+from .scanner import (
+    IMAGE_HASH_AVAILABLE,
+    FileRecord,
+    Progress,
+    ScanCancelled,
+    human_size,
+    normalize_roots,
+    scan,
+    spans_folders,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,8 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("gui", help="open the graphical interface (default)")
 
-    scan_p = sub.add_parser("scan", help="scan a folder from the command line")
-    scan_p.add_argument("path", help="folder or drive to scan, e.g. E:\\")
+    scan_p = sub.add_parser("scan", help="scan one or more folders from the command line")
+    scan_p.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="folders or drives to scan (all subfolders included), e.g. E:\\Photos D:\\Backup",
+    )
+    scan_p.add_argument(
+        "--across-folders",
+        action="store_true",
+        help="only report duplicates found in more than one of the given folders",
+    )
     scan_p.add_argument(
         "--csv",
         metavar="FILE",
@@ -54,8 +74,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_scan(args: argparse.Namespace) -> int:
-    if not os.path.isdir(args.path):
-        print(f"error: not a folder or cannot be accessed: {args.path}", file=sys.stderr)
+    for path in args.paths:
+        if not os.path.isdir(path):
+            print(f"error: not a folder or cannot be accessed: {path}", file=sys.stderr)
+            return 2
+    roots, skipped = normalize_roots(args.paths)
+    for inner, outer in skipped:
+        print(
+            f"note: {inner} is inside (or the same as) {outer}; scanning it once", file=sys.stderr
+        )
+    if args.across_folders and len(roots) < 2:
+        print(
+            "error: --across-folders needs at least two separate folders "
+            "(not the same folder twice, or one inside the other)",
+            file=sys.stderr,
+        )
         return 2
     if args.images and not IMAGE_HASH_AVAILABLE:
         print(
@@ -70,17 +103,21 @@ def _run_scan(args: argparse.Namespace) -> int:
             print(f"\r{p.message[:100]:<100}", end="", file=sys.stderr, flush=True)
 
     try:
-        result = scan(args.path, compare_images=args.images, on_progress=on_progress)
+        result = scan(roots, compare_images=args.images, on_progress=on_progress)
     except (KeyboardInterrupt, ScanCancelled):
         print("\nScan cancelled. No files were changed.", file=sys.stderr)
         return 130
     if not args.quiet:
         print(file=sys.stderr)
 
+    within_one_folder: list[list[FileRecord]] = []
+    if args.across_folders:
+        within_one_folder = [g for g in result.exact_groups if not spans_folders(g)]
+        result = result.across_folders()
     out = args.csv or default_report_name()
-    write_csv(result, out)
+    write_csv(result, out, within_one_folder=within_one_folder)
     print(
-        f"Scanned {len(result.records):,} files. "
+        f"Scanned {len(result.records):,} files in {len(roots)} folder(s). "
         f"{len(result.exact_groups):,} exact duplicate groups "
         f"({human_size(result.wasted_bytes)} in extra copies), "
         f"{len(result.similar_pairs):,} possible similar-photo pairs, "

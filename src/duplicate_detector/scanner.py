@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 
 try:
@@ -78,12 +78,29 @@ class Progress:
     total: float | None = None
 
 
+def spans_folders(files: Iterable[FileRecord]) -> bool:
+    """True if the files were found in more than one of the chosen scan folders."""
+    return len({f.source for f in files}) > 1
+
+
 @dataclass(slots=True)
 class ScanResult:
     records: list[FileRecord] = field(default_factory=list)
     exact_groups: list[list[FileRecord]] = field(default_factory=list)
     similar_pairs: list[SimilarPair] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    #: The folders that were scanned (after removing duplicates and nested folders).
+    roots: list[str] = field(default_factory=list)
+
+    def across_folders(self) -> ScanResult:
+        """A copy keeping only groups and pairs that span more than one scan folder."""
+        return ScanResult(
+            records=self.records,
+            exact_groups=[g for g in self.exact_groups if spans_folders(g)],
+            similar_pairs=[p for p in self.similar_pairs if spans_folders((p.left, p.right))],
+            errors=self.errors,
+            roots=self.roots,
+        )
 
     @property
     def wasted_bytes(self) -> int:
@@ -241,33 +258,83 @@ class _Throttle:
         return False
 
 
+def _norm(path: str) -> str:
+    # realpath resolves junctions, symlinks and subst/mapped drives, so two paths to the
+    # same physical folder compare equal (otherwise every file would "duplicate" itself).
+    return os.path.normcase(os.path.realpath(path))
+
+
+def is_inside(path: str, folder: str) -> bool:
+    """True if ``path`` is ``folder`` itself or anywhere below it."""
+    p, f = _norm(path), _norm(folder)
+    try:
+        return os.path.commonpath([p, f]) == f
+    except ValueError:  # different drives
+        return False
+
+
+def normalize_roots(
+    roots: Iterable[str | os.PathLike[str]],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Return ``(roots_to_scan, skipped)``.
+
+    Duplicate entries, other paths to the same physical folder (junctions,
+    symlinks, subst drives) and folders nested inside another chosen folder are
+    skipped: their files are scanned once, as part of the other folder.
+    ``skipped`` holds ``(skipped_folder, kept_folder)`` pairs; a repeat of the
+    exact same path is dropped without being listed.
+    """
+    unique: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for root in roots:
+        path = os.path.abspath(os.fspath(root))
+        same = next((u for u in unique if _norm(path) == _norm(u)), None)
+        if same is None:
+            unique.append(path)
+        elif os.path.normcase(path) != os.path.normcase(same):
+            skipped.append((path, same))  # an alias of a folder already chosen
+    keep: list[str] = []
+    for path in unique:
+        outer = next((o for o in unique if o != path and is_inside(path, o)), None)
+        if outer is None:
+            keep.append(path)
+        else:
+            skipped.append((path, outer))
+    return keep, skipped
+
+
 def scan(
-    scan_root: str | os.PathLike[str],
+    scan_roots: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
     *,
     compare_images: bool = False,
     cancel: threading.Event | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> ScanResult:
-    """Scan ``scan_root`` recursively for duplicate files.
+    """Scan one or more folders recursively (all subfolders) for duplicate files.
 
-    Raises :class:`ScanCancelled` if ``cancel`` is set during the scan.
+    Duplicates are found across all the folders together. Each file's
+    ``source`` is the chosen folder it was found in. Raises
+    :class:`ScanCancelled` if ``cancel`` is set during the scan.
     """
 
     def report(progress: Progress) -> None:
         if on_progress is not None:
             on_progress(progress)
 
-    root = os.fspath(scan_root)
-    result = ScanResult()
+    if isinstance(scan_roots, (str, os.PathLike)):
+        scan_roots = [scan_roots]
+    roots, _ = normalize_roots(scan_roots)
+    result = ScanResult(roots=roots)
     records, errors = result.records, result.errors
     throttle = _Throttle()
 
     # Stage 1: list files. Sizes come for free from the directory listing.
     report(Progress("Listing files…"))
-    for path, size, mtime in walk_files(root, errors, cancel):
-        records.append(FileRecord(source=root, path=path, size=size, mtime=mtime))
-        if throttle.ready():
-            report(Progress(f"Listing files… {len(records):,} found"))
+    for root in roots:
+        for path, size, mtime in walk_files(root, errors, cancel):
+            records.append(FileRecord(source=root, path=path, size=size, mtime=mtime))
+            if throttle.ready():
+                report(Progress(f"Listing files… {len(records):,} found"))
 
     # Only files that share an exact size can be duplicates.
     by_size: defaultdict[int, list[FileRecord]] = defaultdict(list)

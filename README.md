@@ -10,7 +10,8 @@ A desktop tool that finds duplicate files anywhere under a folder or drive, show
 
 ## Features
 
-- **Exact duplicates, whatever their names:** files are compared by SHA-256 of their contents.
+- **Exact duplicates of any file type, whatever their names:** photos, videos, music, documents and so on are compared by the SHA-256 of their contents.
+- **One folder or several:** scan a single folder or drive, or add 2, 3 or more folders (even on different drives) and compare them all together. Every folder includes all of its subfolders, however deeply nested. You can show only the duplicates that appear in more than one of your folders.
 - **Fast on large drives:** only files that could be duplicates are read.
   1. Files with a unique size are skipped.
   2. Files that share a size are compared by their first 256 KB.
@@ -45,16 +46,19 @@ py app.py
 pip install "duplicate-detector[images] @ git+https://github.com/gopalthakur71/duplicate-detector.git"
 duplicate-detector-gui                      # desktop window
 duplicate-detector scan E:\ --csv report.csv --images
+duplicate-detector scan E:\Photos D:\Backup --across-folders
 ```
 
 ## Usage
 
-1. Enter or browse to a folder. Use `E:\` to scan the whole drive.
-2. Optionally tick **Also compare photos for visual similarity**. Exact duplicate scanning is faster without it.
+1. **Choose one or more folders.** Type a path and press Enter (or click **+ Add**), or click **Browse…**. Each folder appears as a tag, and ✕ removes it. Use `E:\` to scan a whole drive. Subfolders are always included, and a folder inside another chosen folder is only scanned once.
+2. Optional settings:
+   - Tick **Also compare photos for visual similarity** to find look-alike photos. Exact duplicate scanning is faster without it.
+   - With two or more folders, tick **Only show duplicates found in more than one of these folders** to hide duplicates that stay within a single folder. You can change this after the scan.
 3. Click **Scan for duplicates**. Use **Cancel** to stop at any time.
-4. Review the **Exact duplicates** and **Similar photos** tabs. Expand a group to see its files, click a column heading to sort, or type in **Filter** to narrow by path.
+4. Review the **Exact duplicates** and **Similar photos** tabs. Expand a group to see its files, click a column heading to sort, or type in **Filter** to narrow by path. The **Found in** column shows which of your folders each copy is in.
 5. Double-click a file to open it, or right-click for **Show in folder** and **Copy path**. Press Enter for details, including side-by-side previews of similar photos.
-6. **To delete copies:** click the box next to a file, or press Space, to select it. Click a group's box to select all its files, or use **Select all** and **Clear selection**. Then click **Delete selected…** and confirm.
+6. **To delete copies:** click the box next to a file, or press Space, to select it. Click a group's box to select all its files, or use **Select all** and **Clear selection**. With several folders, **Select copies in ▾** selects every copy inside one folder (for example `Phone Backup`) that also exists in another of your folders, so the copy elsewhere is always kept. Then click **Delete selected…** and confirm.
    - The confirmation lists every file and its total size.
    - If you selected *every* copy of a file, it warns you and offers **Keep one copy of each**, which keeps the oldest copy.
    - Files go to the Recycle Bin. Files that changed or disappeared since the scan are skipped.
@@ -66,13 +70,15 @@ duplicate-detector scan E:\ --csv report.csv --images
 
 7. Click **Export report (CSV)** to save the full results. Deleted files are marked in the `notes` column.
 
-Shortcuts: **Enter** to scan, **Esc** to cancel, **Ctrl+F** to filter, **Ctrl+E** to export. The last folder and options are remembered in `%APPDATA%\DuplicateDetector\settings.json`.
+Shortcuts: **Enter** to scan, **Esc** to cancel, **Ctrl+F** to filter, **Ctrl+E** to export. The chosen folders and options are remembered in `%APPDATA%\DuplicateDetector\settings.json`.
 
 ### Command line
 
 ```text
-duplicate-detector scan PATH [--csv FILE] [--images] [--quiet]
+duplicate-detector scan PATH [PATH ...] [--across-folders] [--csv FILE] [--images] [--quiet]
 ```
+
+Give one or more folders. `--across-folders` reports only duplicates that appear in more than one of them.
 
 Progress is printed to stderr, and a summary and the report path to stdout. Exit codes: `0` for success, `2` for invalid arguments, `130` for a cancelled scan (Ctrl+C).
 
@@ -80,7 +86,7 @@ Progress is printed to stderr, and a summary and the report path to stdout. Exit
 
 | Column | Meaning |
 |---|---|
-| `source` | The scanned root folder (or `ERROR` for a read-error row) |
+| `source` | Which of the chosen folders the file was found in (or `ERROR` for a read-error row) |
 | `path`, `filename` | Full path and file name |
 | `size_bytes`, `modified_time` | From the file system |
 | `sha256` | Full content hash. Blank when the file was never fully read because it could not be a duplicate |
@@ -91,7 +97,7 @@ Progress is printed to stderr, and a summary and the report path to stdout. Exit
 ## Limitations
 
 - Photo similarity is a review aid, not proof. It can miss heavily cropped or edited copies and can flag photos that merely look alike.
-- Videos are compared by exact content only.
+- Videos are found when the copies are identical files. Re-encoded, compressed (e.g. by WhatsApp), trimmed or resized versions of a video are different files and are not matched.
 - Large groups of same-size files, such as many identical-size videos, still have to be read in full.
 - Empty (0-byte) files are listed in the CSV but not grouped as duplicates.
 - Symlinks and junctions are skipped. Files and folders that can't be opened are listed as `ERROR` rows.
