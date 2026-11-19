@@ -7,7 +7,7 @@ from tkinter import messagebox
 
 import pytest
 
-from duplicate_detector import gui
+from duplicate_detector import deleter, gui
 from duplicate_detector.scanner import FileRecord, Progress, ScanResult, SimilarPair, scan
 
 from .conftest import MakeFile
@@ -333,3 +333,93 @@ def _wait_for_delete(app: gui.DuplicateDetectorApp, timeout: float = 10) -> None
         if kind == "deleted":
             app._finish_delete(payload[0])
     assert not app.deleting
+
+
+def test_rows_keep_identity_after_deleting(
+    app: gui.DuplicateDetectorApp, data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app._show_results(scan(data))
+    pdf_group = next(
+        g for g in app.exact_tree.get_children() if "report.pdf" in app.exact_tree.item(g, "text")
+    )
+    app._populate(app.exact_tree, pdf_group)
+    app.exact_tree.item(pdf_group, open=True)
+    highlighted = _children(app.exact_tree, pdf_group)[1]
+    highlighted_path = app._file_by_iid[highlighted].path
+    app.exact_tree.selection_set(highlighted)
+    # Delete one photo copy: the photo group disappears and indices shift.
+    victim = next(r for r in app.result.records if r.name == "a copy.jpg")
+    app.set_selected([victim.path], True)
+    monkeypatch.setattr(app, "_confirm_delete", lambda records, at_risk: "delete")
+
+    app.delete_selected()
+    _wait_for_delete(app)
+
+    assert app.exact_tree.item(pdf_group, "open")
+    (now_selected,) = app.exact_tree.selection()
+    assert app._file_by_iid[now_selected].path == highlighted_path
+
+
+def test_both_photos_of_a_pair_trigger_the_warning(
+    app: gui.DuplicateDetectorApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def rec(name: str) -> FileRecord:
+        return FileRecord(source="", path=name, size=1, mtime=0)
+
+    a, b = rec("a.jpg"), rec("b.jpg")
+    app._show_results(ScanResult(records=[a, b], similar_pairs=[SimilarPair(a, b, 0)]))
+    app.notebook.select(1)
+    app.select_all()
+    seen: list[int] = []
+
+    def confirm(records: list[FileRecord], at_risk: list[list[FileRecord]]) -> str:
+        seen.append(len(at_risk))
+        return "cancel"
+
+    monkeypatch.setattr(app, "_confirm_delete", confirm)
+
+    app.delete_selected()
+
+    assert seen == [1]
+
+
+def test_space_toggles_focused_row_without_expanding(
+    app: gui.DuplicateDetectorApp, data: Path
+) -> None:
+    app._show_results(scan(data))
+    group = app.exact_tree.get_children()[0]
+    app.exact_tree.focus(group)
+
+    result = app._on_space(app.exact_tree, None)  # type: ignore[arg-type]
+
+    assert result == "break"
+    assert len(app.selected) == 2
+    assert not app.exact_tree.item(group, "open")
+
+
+def test_select_all_respects_the_filter(app: gui.DuplicateDetectorApp, data: Path) -> None:
+    app._show_results(scan(data))
+    app.filter_var.set("backup")
+    app._refresh_results()
+
+    app.select_all()
+
+    assert {Path(p).name for p in app.selected} == {"a copy.jpg"}
+
+
+def test_failed_file_in_dropped_group_is_unticked(
+    app: gui.DuplicateDetectorApp, data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app._show_results(scan(data))
+    photo_group = next(g for g in app.result.exact_groups if g[0].name.endswith(".jpg"))
+    app.set_selected([r.path for r in photo_group], True)
+    deleted, failed = photo_group
+    outcome = deleter.DeleteOutcome(deleted=[deleted], failed=[(failed, "locked")])
+    warnings: list[str] = []
+    monkeypatch.setattr(messagebox, "showwarning", lambda title, msg: warnings.append(msg))
+
+    app._finish_delete(outcome)
+
+    # The group is gone (one copy left), so its failed file must not stay secretly ticked.
+    assert app.selected == set()
+    assert "locked" in warnings[0]
