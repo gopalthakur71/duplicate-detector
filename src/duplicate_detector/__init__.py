@@ -1,4 +1,4 @@
-"""Local Duplicate Detector: a read-only duplicate file finder."""
+"""Local Duplicate Detector: find duplicate files and choose which copies to delete."""
 
 from .scanner import FileRecord, Progress, ScanCancelled, ScanResult, SimilarPair, scan
 

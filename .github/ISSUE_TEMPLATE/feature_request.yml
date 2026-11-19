@@ -22,5 +22,5 @@ body:
       label: Safety
       options:
         - label: >-
-            I understand this tool is deliberately read-only. Requests that delete or
-            move files need a clear safety design (e.g. Recycle Bin only, confirmation).
+            I understand deletion must stay user-driven: files are only removed after the user
+            selects them and confirms, and only to the Recycle Bin.

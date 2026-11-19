@@ -13,6 +13,6 @@ Include steps to reproduce and the affected version. You can expect an initial r
 
 ## Scope notes
 
-- The app is read-only and makes no network connections.
+- The app makes no network connections. Scanning is read-only. Files are only moved to the Recycle Bin when the user selects them and confirms.
 - CSV reports contain full file paths from your computer. Treat them as private, and remove paths before attaching a report to an issue.
 - Opening a crafted image file uses Pillow. Keep dependencies updated (Dependabot is enabled for this repository).

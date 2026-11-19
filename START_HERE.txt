@@ -8,5 +8,6 @@ LOCAL DUPLICATE DETECTOR - QUICK START
 
 Or download DuplicateDetector.exe from the GitHub Releases page; it needs no Python.
 
-This app only scans and reports. It never deletes, moves, or modifies files.
+Scanning never changes your files. You can tick duplicates and click
+"Delete selected"; they go to the Recycle Bin and can be restored.
 Read README.md for details and limitations.

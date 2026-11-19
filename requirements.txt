@@ -1,6 +1,7 @@
 # Runtime dependencies for running from source with `py app.py`.
-# Only needed for the optional "compare photos" feature; exact duplicate
-# detection uses the Python standard library alone.
+# Send2Trash moves files you choose to delete into the Recycle Bin.
+# Pillow + ImageHash are only needed for the optional "compare photos" feature.
 # Developers: use `uv sync` instead (see CONTRIBUTING.md).
+Send2Trash>=2.2.0
 Pillow>=13.0
 ImageHash>=4.3.2

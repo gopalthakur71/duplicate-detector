@@ -11,14 +11,24 @@ import threading
 import time
 import tkinter as tk
 import traceback
-from collections.abc import Callable, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from functools import partial
+from itertools import pairwise
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Any
+from typing import Any, Literal
 
 from . import __version__
+from .deleter import (
+    DeleteOutcome,
+    apply_deletions,
+    groups_losing_all_copies,
+    has_recycle_bin,
+    keep_one_per_group,
+    move_to_trash,
+)
 from .report import default_report_name, write_csv
 from .scanner import (
     IMAGE_HASH_AVAILABLE,
@@ -39,6 +49,8 @@ FILTER_DELAY_MS = 250
 AUTO_EXPAND_LIMIT = 200
 THUMBNAIL_SIZE = 360
 PLACEHOLDER = "_"
+#: How many paths the delete confirmation lists before summarizing.
+CONFIRM_LIST_LIMIT = 200
 
 #: Opening these runs code, so the app asks first instead of opening on double-click.
 RISKY_EXTENSIONS = frozenset(
@@ -54,6 +66,9 @@ FONT_BOLD = ("Segoe UI", 10, "bold")
 FONT_SMALL = ("Segoe UI", 9)
 FONT_TITLE = ("Segoe UI Semibold", 16)
 FONT_STAT = ("Segoe UI Semibold", 15)
+
+CheckState = Literal["off", "on", "partial"]
+DeleteChoice = Literal["delete", "keep_one", "cancel"]
 
 
 class C:
@@ -147,6 +162,37 @@ def load_thumbnail(path: str, size: int) -> Any:
         return None
 
 
+def make_checkbox(master: tk.Misc, size: int, state: CheckState) -> tk.PhotoImage:
+    """Draw a checkbox image (no image files needed)."""
+    img = tk.PhotoImage(master=master, width=size, height=size)
+    border = C.neutral_pressed if state == "off" else C.primary
+    fill = "#ffffff" if state == "off" else C.primary
+    img.put(border, to=(0, 0, size, size))
+    img.put(fill, to=(1, 1, size - 1, size - 1))
+    thick = max(2, size // 7)
+    if state == "partial":
+        mid = size // 2 - thick // 2
+        img.put("#ffffff", to=(3, mid, size - 3, mid + thick))
+    elif state == "on":
+        # A tick: down-right from the left, then up-right to the top corner.
+        points = [(0.22, 0.52), (0.42, 0.72), (0.80, 0.30)]
+        for (x0, y0), (x1, y1) in pairwise(points):
+            steps = size * 2
+            for i in range(steps + 1):
+                x = int((x0 + (x1 - x0) * i / steps) * size)
+                y = int((y0 + (y1 - y0) * i / steps) * size)
+                img.put("#ffffff", to=(x, y, min(x + thick, size - 1), min(y + thick, size - 1)))
+    return img
+
+
+def _group_key(group: Sequence[FileRecord]) -> str:
+    return group[0].sha256 or group[0].path
+
+
+def _pair_key(pair: SimilarPair) -> tuple[str, str]:
+    return (pair.left.path, pair.right.path)
+
+
 GroupKey = Callable[[tuple[int, list[FileRecord]]], Any]
 PairKey = Callable[[tuple[int, SimilarPair]], Any]
 
@@ -181,22 +227,37 @@ class DuplicateDetectorApp:
             self.root.state("zoomed")  # small screens: use all the space for results
 
         self.settings_file = settings_file or default_settings_file()
+        self.log_file = self.settings_file.parent / "deletion_log.csv"
         settings = load_settings(self.settings_file)
 
         self.events: queue.Queue[tuple[Any, ...]] = queue.Queue()
         self.cancel_event = threading.Event()
         self.result = ScanResult()
         self.scanning = False
+        self.deleting = False
         self._scan_compare_images = False
         self._scan_started: float | None = None
         self._tick_job: str | None = None
         self._filter_job: str | None = None
+
+        # Rows of the result trees. File rows are created when their group opens.
         self._file_by_iid: dict[str, FileRecord] = {}
         self._group_by_iid: dict[str, tuple[str, int]] = {}
         self._group_files: dict[str, Sequence[FileRecord]] = {}
+        self._file_iids_by_path: defaultdict[str, list[str]] = defaultdict(list)
+        self._group_iids_by_path: defaultdict[str, list[str]] = defaultdict(list)
         self._exact_shown = 0
         self._similar_shown = 0
         self._sort: dict[str, tuple[str, bool]] = {"exact": ("#0", False), "similar": ("#0", False)}
+
+        #: Paths the user ticked for deletion.
+        self.selected: set[str] = set()
+        self._record_by_path: dict[str, FileRecord] = {}
+        # Stable numbers for groups, pairs and files, so row ids (and the user's
+        # expanded groups and highlighted row) survive deletions that reshuffle lists.
+        self._group_num: dict[str, int] = {}
+        self._pair_num: dict[tuple[str, str], int] = {}
+        self._file_num: dict[str, int] = {}
 
         default_root = "E:\\" if os.name == "nt" else os.path.expanduser("~")
         self.scan_root = tk.StringVar(value=settings.get("last_folder") or default_root)
@@ -206,6 +267,11 @@ class DuplicateDetectorApp:
         self.filter_var = tk.StringVar()
         self.filter_var.trace_add("write", lambda *_: self._schedule_filter())
 
+        box = self.px(14)
+        self._check_images: dict[CheckState, tk.PhotoImage] = {
+            state: make_checkbox(self.root, box, state) for state in ("off", "on", "partial")
+        }
+
         self._setup_styles()
         self._build_ui()
         self._bind_keys()
@@ -214,6 +280,10 @@ class DuplicateDetectorApp:
 
     def px(self, value: float) -> int:
         return round(value * self.scale)
+
+    @property
+    def busy(self) -> bool:
+        return self.scanning or self.deleting
 
     # ---------------------------------------------------------- styles
     def _setup_styles(self) -> None:
@@ -313,21 +383,21 @@ class DuplicateDetectorApp:
     def _build_header(self) -> None:
         header = tk.Frame(self.root, bg=C.header_bg)
         header.pack(fill="x")
-        header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=1)
         tk.Label(header, text=APP_TITLE, font=FONT_TITLE, bg=C.header_bg, fg=C.header_fg).grid(
-            row=0, column=0, sticky="w", padx=20, pady=(10, 0)
+            row=0, column=0, sticky="w", padx=(20, 16), pady=8
         )
         tk.Label(
             header,
-            text="Finds duplicate files and similar photos. Read-only: never deletes, moves, "
-            "or modifies anything.",
-            font=FONT,
+            text="Nothing is deleted unless you select files and click Delete; "
+            "they then go to the Recycle Bin.",
+            font=FONT_SMALL,
             bg=C.header_bg,
             fg=C.header_sub,
-        ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 10))
+        ).grid(row=0, column=1, sticky="w")
         tk.Label(
             header, text=f"v{__version__}", font=FONT_SMALL, bg=C.header_bg, fg=C.header_sub
-        ).grid(row=0, column=1, rowspan=2, sticky="e", padx=20)
+        ).grid(row=0, column=2, sticky="e", padx=20)
 
     def _build_scan_card(self, body: ttk.Frame) -> None:
         card, f = self._card(body, "1   Choose what to scan")
@@ -371,7 +441,7 @@ class DuplicateDetectorApp:
         status.pack(side="left", fill="x", expand=True, padx=(16, 8))
         self.stage_var = tk.StringVar(value="Ready")
         self.detail_var = tk.StringVar(
-            value="Choose a folder or drive, then press Scan (or Enter). Nothing will be changed."
+            value="Choose a folder or drive, then press Scan (or Enter)."
         )
         self.stage_label = tk.Label(
             status, textvariable=self.stage_var, font=FONT_BOLD, bg=C.card, fg=C.text, anchor="w"
@@ -385,7 +455,7 @@ class DuplicateDetectorApp:
 
     def _build_stats(self, body: ttk.Frame) -> None:
         row = ttk.Frame(body)
-        row.pack(fill="x", pady=8)
+        row.pack(fill="x", pady=6)
         specs = [
             ("files", "Files scanned", C.text),
             ("groups", "Duplicate groups", C.primary),
@@ -401,9 +471,9 @@ class DuplicateDetectorApp:
             card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 10, 0))
             var = tk.StringVar(value="–")
             value = tk.Label(card, textvariable=var, font=FONT_STAT, bg=C.card, fg=color)
-            value.pack(anchor="w", padx=14, pady=(6, 0))
+            value.pack(anchor="w", padx=14, pady=(4, 0))
             label = tk.Label(card, text=caption, font=FONT_SMALL, bg=C.card, fg=C.muted)
-            label.pack(anchor="w", padx=14, pady=(0, 6))
+            label.pack(anchor="w", padx=14, pady=(0, 4))
             self.stat_vars[key] = var
             self.stat_labels[key] = value
             if key == "errors":
@@ -416,8 +486,27 @@ class DuplicateDetectorApp:
         card.pack(fill="both", expand=True)
 
         bar = tk.Frame(f, bg=C.card)
-        bar.pack(fill="x", pady=(4, 8))
+        bar.pack(fill="x", pady=(4, 6))
         tk.Label(bar, text="2   Results", font=FONT_BOLD, bg=C.card, fg=C.text).pack(side="left")
+        # Selection: the user picks files; nothing is ever selected automatically.
+        self.select_all_btn = ttk.Button(
+            bar, text="Select all", style="Small.Secondary.TButton", command=self.select_all
+        )
+        self.select_all_btn.pack(side="left", padx=(16, 0))
+        self.clear_btn = ttk.Button(
+            bar,
+            text="Clear selection",
+            style="Small.Secondary.TButton",
+            command=self.clear_selection,
+        )
+        self.clear_btn.pack(side="left", padx=(6, 0))
+        self.selection_var = tk.StringVar(value="No files selected")
+        self.selection_label = tk.Label(
+            bar, textvariable=self.selection_var, font=FONT, bg=C.card, fg=C.muted
+        )
+        self.selection_label.pack(side="left", padx=(12, 0))
+        for b in (self.select_all_btn, self.clear_btn):
+            b.state(["disabled"])
         ttk.Button(
             bar,
             text="Collapse all",
@@ -438,8 +527,8 @@ class DuplicateDetectorApp:
 
         tk.Label(
             f,
-            text="Double-click a file to open it  ·  Right-click for Show in folder / Copy path"
-            "  ·  Enter for details  ·  Click a column heading to sort",
+            text="Click a box (or press Space) to select  ·  Double-click a file to open it  ·  "
+            "Right-click for Show in folder / Copy path  ·  Click a column heading to sort",
             font=FONT_SMALL,
             bg=C.card,
             fg=C.muted,
@@ -468,6 +557,8 @@ class DuplicateDetectorApp:
         self._update_tab_titles()
 
         self.menu = tk.Menu(self.root, tearoff=False)
+        self.menu.add_command(label="Select / unselect", command=self._toggle_focused)
+        self.menu.add_separator()
         self.menu.add_command(label="Open file", command=self._open_selected)
         self.menu.add_command(label="Show in folder", command=self._reveal_selected)
         self.menu.add_command(label="Copy path", command=self._copy_selected)
@@ -483,6 +574,7 @@ class DuplicateDetectorApp:
             tree.heading(col, text=label, anchor="w", command=partial(self._sort_by, kind, col))
             tree.column(col, width=self.px(width), anchor="w", stretch=col == "#0")
         tree.tag_configure("group", background=C.group_row, font=FONT_BOLD)
+        tree.tag_configure("checked", foreground=C.danger)
         yscroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         xscroll = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -492,8 +584,11 @@ class DuplicateDetectorApp:
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         tree.bind("<<TreeviewOpen>>", lambda _e: self._populate(tree, tree.focus()))
+        tree.bind("<Button-1>", self._on_click)
+        tree.bind("<space>", partial(self._on_space, tree))
         tree.bind("<Double-1>", self._on_double_click)
         tree.bind("<Return>", lambda _e: self.show_details())
+        tree.bind("<Delete>", lambda _e: self.delete_selected())
         tree.bind("<Button-3>", self._on_right_click)
         if sys.platform == "darwin":
             tree.bind("<Button-2>", self._on_right_click)
@@ -502,10 +597,15 @@ class DuplicateDetectorApp:
     def _build_footer(self, body: ttk.Frame) -> None:
         bottom = ttk.Frame(body)
         bottom.pack(side="bottom", fill="x", pady=(10, 0))
+        self.delete_btn = ttk.Button(
+            bottom, text="Delete selected…", style="Danger.TButton", command=self.delete_selected
+        )
+        self.delete_btn.pack(side="left")
+        self.delete_btn.state(["disabled"])
         self.export_btn = ttk.Button(
             bottom, text="⤓  Export report (CSV)", style="Success.TButton", command=self.export_csv
         )
-        self.export_btn.pack(side="left")
+        self.export_btn.pack(side="left", padx=(8, 0))
         self.details_btn = ttk.Button(
             bottom, text="Details", style="Secondary.TButton", command=self.show_details
         )
@@ -518,7 +618,7 @@ class DuplicateDetectorApp:
             b.state(["disabled"])
         tk.Label(
             bottom,
-            text="✔  Safe: this app never deletes, moves, or modifies files.",
+            text="✔  Deleted files go to the Recycle Bin and can be restored.",
             font=FONT,
             bg=C.bg,
             fg=C.success_pressed,
@@ -538,7 +638,7 @@ class DuplicateDetectorApp:
 
     # ------------------------------------------------------------ scan
     def start_scan(self) -> None:
-        if self.scanning:
+        if self.busy:
             return
         location = self.scan_root.get().strip()
         if not location:
@@ -555,6 +655,8 @@ class DuplicateDetectorApp:
         self._scan_compare_images = self.do_images.get()
         self.cancel_event.clear()
         self.result = ScanResult()
+        self._record_by_path = {}
+        self.selected.clear()
         self._refresh_results()
         for var in self.stat_vars.values():
             var.set("–")
@@ -625,6 +727,16 @@ class DuplicateDetectorApp:
                     messagebox.showerror("Scan failed", payload[0])
                 elif kind == "thumbnail":
                     self._show_thumbnail(*payload)
+                elif kind == "delete_progress":
+                    done, total = payload
+                    self.progress.config(maximum=max(total, 1), value=done)
+                    self.detail_var.set(f"Moved {done:,} of {total:,} files…")
+                elif kind == "deleted":
+                    self._finish_delete(payload[0])
+                elif kind == "delete_failed":
+                    self._end_delete()
+                    self._set_stage("Delete failed", C.danger)
+                    messagebox.showerror("Delete failed", payload[0])
         except queue.Empty:
             pass
         self.root.after(POLL_MS, self._process_events)
@@ -658,25 +770,20 @@ class DuplicateDetectorApp:
 
     def _show_results(self, result: ScanResult) -> None:
         self.result = result
+        self._record_by_path = {r.path: r for r in result.records}
+        self._file_num = {r.path: n for n, r in enumerate(result.records)}
+        self._group_num = {_group_key(g): n for n, g in enumerate(result.exact_groups, 1)}
+        self._pair_num = {_pair_key(p): n for n, p in enumerate(result.similar_pairs, 1)}
+        self.selected.clear()
         self._scan_ended("Done.Horizontal.TProgressbar")
         self._refresh_results()
-        stats = {
-            "files": f"{len(result.records):,}",
-            "groups": f"{len(result.exact_groups):,}",
-            "wasted": human_size(result.wasted_bytes),
-            "similar": f"{len(result.similar_pairs):,}" if self._scan_compare_images else "off",
-            "errors": f"{len(result.errors):,}",
-        }
-        for key, value in stats.items():
-            self.stat_vars[key].set(value)
-        self.stat_labels["errors"].config(fg=C.danger if result.errors else C.muted)
-        self.errors_card.config(cursor="hand2" if result.errors else "")
+        self._update_stats()
 
         if result.exact_groups or result.similar_pairs:
             self._set_stage("✔  Scan complete: duplicates found", C.success)
             detail = (
                 f"{len(result.exact_groups):,} groups use {human_size(result.wasted_bytes)} in "
-                "extra copies. Expand a group to see its files."
+                "extra copies. Tick the files you want to delete."
             )
         else:
             self._set_stage("✔  Scan complete: no duplicates found", C.success)
@@ -690,6 +797,20 @@ class DuplicateDetectorApp:
         if not result.exact_groups and result.similar_pairs:
             self.notebook.select(1)
         self.root.bell()
+
+    def _update_stats(self) -> None:
+        result = self.result
+        stats = {
+            "files": f"{len(result.records):,}",
+            "groups": f"{len(result.exact_groups):,}",
+            "wasted": human_size(result.wasted_bytes),
+            "similar": f"{len(result.similar_pairs):,}" if self._scan_compare_images else "off",
+            "errors": f"{len(result.errors):,}",
+        }
+        for key, value in stats.items():
+            self.stat_vars[key].set(value)
+        self.stat_labels["errors"].config(fg=C.danger if result.errors else C.muted)
+        self.errors_card.config(cursor="hand2" if result.errors else "")
 
     # --------------------------------------------------------- results
     def _schedule_filter(self) -> None:
@@ -707,14 +828,23 @@ class DuplicateDetectorApp:
         """Rebuild the group rows. File rows are only created when a group is opened."""
         self._filter_job = None
         needle = self.filter_var.get().strip().lower()
-        for kind, tree in (("exact", self.exact_tree), ("similar", self.similar_tree)):
-            was_open = {iid for iid in tree.get_children() if tree.item(iid, "open")}
-            selected = tree.selection()
+        trees = (("exact", self.exact_tree), ("similar", self.similar_tree))
+        state = {
+            kind: (
+                {iid for iid in tree.get_children() if tree.item(iid, "open")},
+                tree.selection(),
+            )
+            for kind, tree in trees
+        }
+        for _, tree in trees:
             tree.delete(*tree.get_children())
-            for iid in [i for i, (k, _) in self._group_by_iid.items() if k == kind]:
-                self._group_by_iid.pop(iid, None)
-                self._file_by_iid.pop(iid, None)
-                self._group_files.pop(iid, None)
+        for d in (self._file_by_iid, self._group_by_iid, self._group_files):
+            d.clear()
+        self._file_iids_by_path.clear()
+        self._group_iids_by_path.clear()
+
+        for kind, tree in trees:
+            was_open, selected = state[kind]
             shown = self._fill_exact(needle) if kind == "exact" else self._fill_similar(needle)
             auto_open = bool(needle) and len(shown) <= AUTO_EXPAND_LIMIT
             for iid in shown:
@@ -726,6 +856,30 @@ class DuplicateDetectorApp:
                 tree.see(selected[0])
         self._update_headings()
         self._update_tab_titles(needle)
+        self._update_selection_summary()
+
+    def _add_group(
+        self, tree: ttk.Treeview, kind: str, idx: int, iid: str, text: str, values: tuple[Any, ...]
+    ) -> None:
+        files = (
+            self.result.exact_groups[idx]
+            if kind == "exact"
+            else (self.result.similar_pairs[idx].left, self.result.similar_pairs[idx].right)
+        )
+        tree.insert(
+            "",
+            "end",
+            iid=iid,
+            text=text,
+            values=values,
+            image=self._check_images[self._group_state(files)],
+            tags=("group",),
+        )
+        tree.insert(iid, "end", iid=f"{iid}:{PLACEHOLDER}", text="…")
+        self._group_by_iid[iid] = (kind, idx)
+        self._group_files[iid] = files
+        for rec in files:
+            self._group_iids_by_path[rec.path].append(iid)
 
     def _fill_exact(self, needle: str) -> list[str]:
         column, reverse = self._sort["exact"]
@@ -737,18 +891,16 @@ class DuplicateDetectorApp:
             if needle and not any(needle in r.path.lower() for r in group):
                 continue
             size = group[0].size
-            iid = f"g{idx}"
-            self.exact_tree.insert(
-                "",
-                "end",
-                iid=iid,
-                text=f"Group {idx + 1}   {group[0].name}",
-                values=(len(group), human_size(size), human_size(size * (len(group) - 1)), ""),
-                tags=("group",),
+            num = self._group_num.get(_group_key(group), idx + 1)
+            iid = f"g{num}"
+            self._add_group(
+                self.exact_tree,
+                "exact",
+                idx,
+                iid,
+                f" Group {num}   {group[0].name}",
+                (len(group), human_size(size), human_size(size * (len(group) - 1)), ""),
             )
-            self.exact_tree.insert(iid, "end", iid=f"{iid}:{PLACEHOLDER}", text="…")
-            self._group_by_iid[iid] = ("exact", idx)
-            self._group_files[iid] = group
             shown.append(iid)
         self._exact_shown = len(shown)
         return shown
@@ -760,22 +912,19 @@ class DuplicateDetectorApp:
         )
         shown: list[str] = []
         for idx, pair in pairs:
-            files = (pair.left, pair.right)
-            if needle and not any(needle in r.path.lower() for r in files):
+            if needle and not any(needle in r.path.lower() for r in (pair.left, pair.right)):
                 continue
-            iid = f"p{idx}"
+            num = self._pair_num.get(_pair_key(pair), idx + 1)
+            iid = f"p{num}"
             label = "looks identical" if pair.distance == 0 else f"distance {pair.distance}"
-            self.similar_tree.insert(
-                "",
-                "end",
-                iid=iid,
-                text=f"Pair {idx + 1}   {pair.left.name}  ↔  {pair.right.name}   ({label})",
-                values=(pair.distance, "", ""),
-                tags=("group",),
+            self._add_group(
+                self.similar_tree,
+                "similar",
+                idx,
+                iid,
+                f" Pair {num}   {pair.left.name}  ↔  {pair.right.name}   ({label})",
+                (pair.distance, "", ""),
             )
-            self.similar_tree.insert(iid, "end", iid=f"{iid}:{PLACEHOLDER}", text="…")
-            self._group_by_iid[iid] = ("similar", idx)
-            self._group_files[iid] = files
             shown.append(iid)
         self._similar_shown = len(shown)
         return shown
@@ -788,15 +937,25 @@ class DuplicateDetectorApp:
         tree.delete(placeholder)
         kind, idx = self._group_by_iid[iid]
         for j, rec in enumerate(self._group_files[iid]):
-            fid = f"{iid}:{j}"
+            fid = f"{iid}:f{self._file_num.get(rec.path, j)}"
             values: tuple[str, ...]
             if kind == "exact":
                 values = ("", human_size(rec.size), "", format_time(rec.mtime))
             else:
                 values = ("", human_size(rec.size), format_time(rec.mtime))
-            tree.insert(iid, "end", iid=fid, text=rec.path, values=values)
+            checked = rec.path in self.selected
+            tree.insert(
+                iid,
+                "end",
+                iid=fid,
+                text=f" {rec.path}",
+                values=values,
+                image=self._check_images["on" if checked else "off"],
+                tags=("checked",) if checked else (),
+            )
             self._file_by_iid[fid] = rec
             self._group_by_iid[fid] = (kind, idx)
+            self._file_iids_by_path[rec.path].append(fid)
 
     def _update_headings(self) -> None:
         for kind, tree in (("exact", self.exact_tree), ("similar", self.similar_tree)):
@@ -827,6 +986,309 @@ class DuplicateDetectorApp:
                 self._populate(tree, iid)
             tree.item(iid, open=is_open)
 
+    # ------------------------------------------------------- checkboxes
+    def _group_state(self, files: Sequence[FileRecord]) -> CheckState:
+        count = sum(1 for r in files if r.path in self.selected)
+        if count == 0:
+            return "off"
+        return "on" if count == len(files) else "partial"
+
+    def set_selected(self, paths: Iterable[str], selected: bool) -> None:
+        """Tick or untick files, then redraw only the rows that show them."""
+        changed = []
+        for path in paths:
+            if selected and path not in self.selected:
+                self.selected.add(path)
+                changed.append(path)
+            elif not selected and path in self.selected:
+                self.selected.discard(path)
+                changed.append(path)
+        self._redraw_checks(changed)
+        self._update_selection_summary()
+
+    def _redraw_checks(self, paths: Iterable[str]) -> None:
+        groups: set[str] = set()
+        for path in paths:
+            checked = path in self.selected
+            for fid in self._file_iids_by_path.get(path, ()):
+                tree = self.exact_tree if fid.startswith("g") else self.similar_tree
+                tree.item(
+                    fid,
+                    image=self._check_images["on" if checked else "off"],
+                    tags=("checked",) if checked else (),
+                )
+            groups.update(self._group_iids_by_path.get(path, ()))
+        for gid in groups:
+            tree = self.exact_tree if gid.startswith("g") else self.similar_tree
+            tree.item(gid, image=self._check_images[self._group_state(self._group_files[gid])])
+
+    def toggle(self, iid: str) -> None:
+        """Toggle a file row, or every file in a group row."""
+        if self.busy:
+            return
+        rec = self._file_by_iid.get(iid)
+        if rec is not None:
+            self.set_selected([rec.path], rec.path not in self.selected)
+            return
+        files = self._group_files.get(iid)
+        if files:
+            all_on = self._group_state(files) == "on"
+            self.set_selected([r.path for r in files], not all_on)
+
+    def _toggle_focused(self) -> None:
+        iid = self._selected_iid()
+        if iid:
+            self.toggle(iid)
+
+    def _on_space(self, tree: ttk.Treeview, _event: tk.Event[Any]) -> str:
+        iid = tree.focus()
+        if iid:
+            tree.selection_set(iid)
+            self.toggle(iid)
+        return "break"  # otherwise ttk also expands/collapses the row
+
+    def select_all(self) -> None:
+        """Select every file shown in the current tab. With a filter, only matching files."""
+        tree = self._current_tree()
+        needle = self.filter_var.get().strip().lower()
+        paths = [
+            r.path
+            for gid in tree.get_children()
+            for r in self._group_files.get(gid, ())
+            if not needle or needle in r.path.lower()
+        ]
+        self.set_selected(paths, True)
+
+    def clear_selection(self) -> None:
+        self.set_selected(list(self.selected), False)
+
+    def _update_selection_summary(self) -> None:
+        count = len(self.selected)
+        has_results = bool(self.result.exact_groups or self.result.similar_pairs)
+        if count:
+            size = sum(self._record_by_path[p].size for p in self.selected)
+            self.selection_var.set(f"{count:,} files selected  ·  {human_size(size)}")
+            self.selection_label.config(fg=C.danger)
+        else:
+            self.selection_var.set("No files selected")
+            self.selection_label.config(fg=C.muted)
+        self.select_all_btn.state(["!disabled"] if has_results and not self.busy else ["disabled"])
+        self.clear_btn.state(["!disabled"] if count and not self.busy else ["disabled"])
+        self.delete_btn.state(["!disabled"] if count and not self.busy else ["disabled"])
+        self.delete_btn.config(
+            text=f"Delete selected ({count:,})…" if count else "Delete selected…"
+        )
+
+    # ---------------------------------------------------------- delete
+    def delete_selected(self) -> None:
+        if self.busy or not self.selected:
+            return
+        groups = self._all_groups()
+        at_risk = groups_losing_all_copies(groups, self.selected)
+        records = self._selected_records()
+        choice = self._confirm_delete(records, at_risk)
+        if choice == "cancel":
+            return
+        if choice == "keep_one":
+            kept = keep_one_per_group(groups, self.selected)
+            self._redraw_checks(r.path for r in kept)
+            self._update_selection_summary()
+            records = self._selected_records()
+            if not records:
+                return
+        self.deleting = True
+        self._update_selection_summary()
+        self.scan_btn.state(["disabled"])
+        self.progress.stop()
+        self.progress.config(
+            mode="determinate",
+            style="Scan.Horizontal.TProgressbar",
+            maximum=len(records),
+            value=0,
+        )
+        self._set_stage("Moving files to the Recycle Bin…", C.danger)
+        threading.Thread(
+            target=self._delete_worker, args=(records, [list(g) for g in groups]), daemon=True
+        ).start()
+
+    def _all_groups(self) -> list[Sequence[FileRecord]]:
+        """Exact duplicate groups plus similar-photo pairs."""
+        return [
+            *self.result.exact_groups,
+            *((p.left, p.right) for p in self.result.similar_pairs),
+        ]
+
+    def _selected_records(self) -> list[FileRecord]:
+        return sorted(
+            (self._record_by_path[p] for p in self.selected if p in self._record_by_path),
+            key=lambda r: r.path,
+        )
+
+    def _delete_worker(self, records: list[FileRecord], groups: list[list[FileRecord]]) -> None:
+        try:
+            outcome = move_to_trash(
+                records,
+                groups=groups,
+                log_path=self.log_file,
+                on_progress=lambda d, t: self.events.put(("delete_progress", d, t)),
+            )
+            self.events.put(("deleted", outcome))
+        except Exception:
+            self.events.put(("delete_failed", traceback.format_exc()))
+
+    def _end_delete(self) -> None:
+        self.deleting = False
+        self.scan_btn.state(["!disabled"])
+        self.progress.config(style="Done.Horizontal.TProgressbar", maximum=1, value=1)
+        self._update_selection_summary()
+
+    def _finish_delete(self, outcome: DeleteOutcome) -> None:
+        deleted = {r.path for r in outcome.deleted}
+        apply_deletions(self.result, deleted)
+        # Keep ticks only on files that are still listed (e.g. ones that failed and still
+        # have a group); a hidden ticked file could otherwise be deleted later by surprise.
+        listed = {r.path for g in self._all_groups() for r in g}
+        self.selected &= listed - {r.path for r in outcome.changed}
+        self._end_delete()
+        self._refresh_results()
+        self._update_stats()
+
+        self._set_stage(
+            f"✔  Moved {len(outcome.deleted):,} files ({human_size(outcome.deleted_bytes)}) "
+            "to the Recycle Bin",
+            C.success if outcome.deleted else C.warn,
+        )
+        if outcome.log_error:
+            self.detail_var.set(f"Log could NOT be written: {outcome.log_error}")
+        else:
+            self.detail_var.set(f"You can restore them from the Recycle Bin. Log: {self.log_file}")
+        problems = []
+        if outcome.no_survivor:
+            problems.append(
+                f"{len(outcome.no_survivor):,} files were kept because the copy you chose to keep "
+                "has changed or disappeared since the scan, so they may be the last copy:\n"
+                + "\n".join(f"  {r.path}" for r in outcome.no_survivor[:15])
+            )
+        if outcome.changed:
+            problems.append(
+                f"{len(outcome.changed):,} files were skipped because they changed or "
+                "disappeared since the scan (rescan to update):\n"
+                + "\n".join(f"  {r.path}" for r in outcome.changed[:15])
+            )
+        if outcome.failed:
+            problems.append(
+                f"{len(outcome.failed):,} files could not be moved to the Recycle Bin and "
+                "were left in place:\n"
+                + "\n".join(f"  {r.path}: {err}" for r, err in outcome.failed[:15])
+            )
+        if problems:
+            messagebox.showwarning("Some files were not deleted", "\n\n".join(problems))
+
+    def _confirm_delete(
+        self, records: list[FileRecord], at_risk: Sequence[Sequence[FileRecord]]
+    ) -> DeleteChoice:
+        """Ask the user to confirm. Returns "delete", "keep_one" or "cancel"."""
+        total = sum(r.size for r in records)
+        no_bin = [r for r in records if not has_recycle_bin(r.path)]
+        win = self._toplevel("Confirm delete", 760, 520 if at_risk or no_bin else 440)
+        choice: list[DeleteChoice] = ["cancel"]
+
+        tk.Label(
+            win,
+            text=f"Move {len(records):,} files ({human_size(total)}) to the Recycle Bin?",
+            font=("Segoe UI Semibold", 13),
+            bg=C.card,
+            fg=C.text,
+        ).pack(anchor="w", padx=16, pady=(14, 2))
+        tk.Label(
+            win,
+            text="You can restore them from the Recycle Bin later. Files that changed since "
+            "the scan are skipped.",
+            font=FONT,
+            bg=C.card,
+            fg=C.muted,
+        ).pack(anchor="w", padx=16)
+
+        if at_risk:
+            names = ", ".join(g[0].name for g in at_risk[:5]) + ("…" if len(at_risk) > 5 else "")
+            tk.Label(
+                win,
+                text=f"⚠  Every file is selected in {len(at_risk):,} duplicate group(s) or "
+                f"similar-photo pair(s) ({names}). Deleting them leaves no copy outside the "
+                "Recycle Bin. (Similar photos are different files, not copies.)",
+                font=FONT_BOLD,
+                bg="#fef2f2",
+                fg=C.danger,
+                wraplength=self.px(700),
+                justify="left",
+                padx=10,
+                pady=8,
+            ).pack(fill="x", padx=16, pady=(10, 0))
+
+        if no_bin:
+            tk.Label(
+                win,
+                text=f"{len(no_bin):,} selected file(s) are on a drive without a Recycle Bin "
+                "(USB stick or network drive). They will be skipped and left in place.",
+                font=FONT,
+                bg="#fffbeb",
+                fg=C.warn,
+                wraplength=self.px(700),
+                justify="left",
+                padx=10,
+                pady=6,
+            ).pack(fill="x", padx=16, pady=(10, 0))
+
+        box = tk.Text(win, height=10, wrap="none", font=("Consolas", 9), relief="flat", bg=C.bg)
+        box.pack(fill="both", expand=True, padx=16, pady=10)
+        lines = [r.path for r in records[:CONFIRM_LIST_LIMIT]]
+        if len(records) > CONFIRM_LIST_LIMIT:
+            lines.append(f"… and {len(records) - CONFIRM_LIST_LIMIT:,} more")
+        box.insert("1.0", "\n".join(lines))
+        box.config(state="disabled")
+
+        buttons = tk.Frame(win, bg=C.card)
+        buttons.pack(fill="x", padx=16, pady=(0, 14))
+
+        def finish(value: DeleteChoice) -> None:
+            choice[0] = value
+            win.destroy()
+
+        cancel = ttk.Button(
+            buttons, text="Cancel", style="Secondary.TButton", command=partial(finish, "cancel")
+        )
+        cancel.pack(side="right")
+        ttk.Button(
+            buttons,
+            text="Delete all selected" if at_risk else "Move to Recycle Bin",
+            style="Danger.TButton",
+            command=partial(finish, "delete"),
+        ).pack(side="right", padx=(0, 8))
+        if at_risk:
+            ttk.Button(
+                buttons,
+                text="Keep one copy of each",
+                style="Primary.TButton",
+                command=partial(finish, "keep_one"),
+            ).pack(side="right", padx=(0, 8))
+            tk.Label(
+                buttons,
+                text="Keeps the oldest copy",
+                font=FONT_SMALL,
+                bg=C.card,
+                fg=C.muted,
+            ).pack(side="left")
+        cancel.focus_set()
+        win.bind("<Escape>", lambda _e: finish("cancel"))
+        win.protocol("WM_DELETE_WINDOW", partial(finish, "cancel"))
+        try:
+            win.wait_visibility()  # grabbing an unmapped window fails on X11
+            win.grab_set()
+        except tk.TclError:
+            pass
+        self.root.wait_window(win)
+        return choice[0]
+
     # ------------------------------------------------------- selection
     def _current_tree(self) -> ttk.Treeview:
         return self.exact_tree if self.notebook.index("current") == 0 else self.similar_tree
@@ -839,8 +1301,22 @@ class DuplicateDetectorApp:
         iid = self._selected_iid()
         return self._file_by_iid.get(iid) if iid else None
 
+    def _on_click(self, event: tk.Event[Any]) -> str | None:
+        tree: ttk.Treeview = event.widget
+        iid = tree.identify_row(event.y)
+        if iid and "image" in str(tree.identify_element(event.x, event.y)):
+            tree.selection_set(iid)
+            tree.focus(iid)
+            self.toggle(iid)
+            return "break"  # don't also expand/collapse the group
+        return None
+
     def _on_double_click(self, event: tk.Event[Any]) -> str | None:
         tree: ttk.Treeview = event.widget
+        if "image" in str(tree.identify_element(event.x, event.y)):
+            # Tk delivers the second click of a fast double click here, not to <Button-1>,
+            # so treat it as the second toggle.
+            return self._on_click(event)
         rec = self._file_by_iid.get(tree.identify_row(event.y))
         if rec is None:
             return None  # default behavior expands/collapses the group
@@ -855,8 +1331,9 @@ class DuplicateDetectorApp:
         tree.selection_set(iid)
         tree.focus(iid)
         state = "normal" if iid in self._file_by_iid else "disabled"
-        for index in (0, 1, 2):
+        for index in (2, 3, 4):  # Open file, Show in folder, Copy path
             self.menu.entryconfigure(index, state=state)
+        self.menu.entryconfigure(0, state="disabled" if self.busy else "normal")
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def file_action(self, action: Callable[[str], None], path: str) -> None:
@@ -1029,7 +1506,7 @@ class DuplicateDetectorApp:
 
     # ----------------------------------------------------------- misc
     def export_csv(self) -> None:
-        if self.scanning or not self.result.records:
+        if self.busy or not self.result.records:
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
@@ -1053,6 +1530,11 @@ class DuplicateDetectorApp:
         )
 
     def on_close(self) -> None:
+        if self.deleting:
+            messagebox.showinfo(
+                "Please wait", "Files are being moved to the Recycle Bin. Wait for it to finish."
+            )
+            return
         if self.scanning:
             if not messagebox.askyesno("Scan running", "A scan is still running. Quit anyway?"):
                 return

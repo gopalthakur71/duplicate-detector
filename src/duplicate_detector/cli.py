@@ -20,7 +20,7 @@ from .scanner import IMAGE_HASH_AVAILABLE, Progress, ScanCancelled, human_size, 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="duplicate-detector",
-        description="Find duplicate files. Read-only: never deletes, moves, or modifies files.",
+        description="Find duplicate files. The scan command is report-only and never deletes.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command")
