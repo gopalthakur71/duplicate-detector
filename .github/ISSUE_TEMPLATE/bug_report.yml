@@ -1,0 +1,54 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **remove private file paths** from anything you paste.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Scan a folder containing ...
+        2. Tick "compare photos" ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in the window title, or run `duplicate-detector --version`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version (if running from source)
+      placeholder: "3.14.1"
+  - type: textarea
+    id: scan-size
+    attributes:
+      label: Scan size
+      description: Roughly how many files / how much data, and the drive type (SSD, HDD, network, cloud-synced).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error message or traceback
+      render: text

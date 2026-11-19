@@ -1,0 +1,69 @@
+name: Release
+
+# Push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to publish
+# a GitHub Release with the Python package and a standalone Windows .exe.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build Python package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Check tag matches package version
+        run: |
+          version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/duplicate_detector/__init__.py)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package version ${version}"
+            exit 1
+          fi
+      - run: uv build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  windows-exe:
+    name: Build Windows executable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+      - run: uv sync --locked --all-extras
+      - run: uv run pytest -q
+      - name: Build DuplicateDetector.exe
+        run: >
+          uv run --with pyinstaller pyinstaller app.py
+          --onefile --windowed --noconfirm
+          --name DuplicateDetector
+          --paths src
+          --collect-submodules duplicate_detector
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-exe
+          path: dist/DuplicateDetector.exe
+
+  release:
+    name: Publish GitHub Release
+    needs: [package, windows-exe]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*
+          generate_release_notes: true

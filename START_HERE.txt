@@ -1,0 +1,12 @@
+LOCAL DUPLICATE DETECTOR - QUICK START
+
+1. Install Python 3.11 or newer from https://www.python.org/downloads/
+   (tick "Add Python to PATH" during installation)
+2. Open Command Prompt in this folder
+3. Run: py -m pip install -r requirements.txt
+4. Run: py app.py
+
+Or download DuplicateDetector.exe from the GitHub Releases page; it needs no Python.
+
+This app only scans and reports. It never deletes, moves, or modifies files.
+Read README.md for details and limitations.
