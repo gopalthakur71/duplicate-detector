@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+import tkinter as tk
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 MakeFile = Callable[[str, bytes], Path]
+
+
+@pytest.fixture(scope="session")
+def tk_root() -> Iterator[tk.Tk]:
+    """One shared Tk root: creating many Tk interpreters in a row is unreliable on Windows."""
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"no display available: {exc}")
+    root.withdraw()
+    yield root
+    root.destroy()
 
 
 @pytest.fixture

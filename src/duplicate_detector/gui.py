@@ -38,7 +38,9 @@ from .scanner import (
     ScanResult,
     SimilarPair,
     human_size,
+    normalize_roots,
     scan,
+    spans_folders,
 )
 
 APP_TITLE = "Local Duplicate Detector"
@@ -202,12 +204,14 @@ EXACT_SORT_KEYS: dict[str, GroupKey] = {
     "size": lambda item: item[1][0].size,
     "wasted": lambda item: item[1][0].size * (len(item[1]) - 1),
     "modified": lambda item: max(r.mtime for r in item[1]),
+    "found": lambda item: (len({r.source for r in item[1]}), sorted({r.source for r in item[1]})),
 }
 SIMILAR_SORT_KEYS: dict[str, PairKey] = {
     "#0": lambda item: item[0],
     "distance": lambda item: item[1].distance,
     "size": lambda item: max(item[1].left.size, item[1].right.size),
     "modified": lambda item: max(item[1].left.mtime, item[1].right.mtime),
+    "found": lambda item: sorted({item[1].left.source, item[1].right.source}),
 }
 
 
@@ -260,7 +264,18 @@ class DuplicateDetectorApp:
         self._file_num: dict[str, int] = {}
 
         default_root = "E:\\" if os.name == "nt" else os.path.expanduser("~")
-        self.scan_root = tk.StringVar(value=settings.get("last_folder") or default_root)
+        saved = settings.get("folders")
+        if isinstance(saved, list) and saved and all(isinstance(x, str) for x in saved):
+            folders = list(saved)
+        else:
+            folders = [settings.get("last_folder") or default_root]
+        #: Folders to scan together (each with all its subfolders).
+        self.folders: list[str] = folders
+        #: Text box for typing a folder to add.
+        self.scan_root = tk.StringVar(value="")
+        #: Only show duplicates found in more than one of the chosen folders.
+        self.across_only = tk.BooleanVar(value=False)
+        self._root_labels: dict[str, str] = {}
         self.do_images = tk.BooleanVar(
             value=bool(settings.get("compare_images")) and IMAGE_HASH_AVAILABLE
         )
@@ -400,29 +415,47 @@ class DuplicateDetectorApp:
         ).grid(row=0, column=2, sticky="e", padx=20)
 
     def _build_scan_card(self, body: ttk.Frame) -> None:
-        card, f = self._card(body, "1   Choose what to scan")
+        card, f = self._card(body, "1   Choose folders to scan (all subfolders are included)")
         card.pack(fill="x")
         f.columnconfigure(0, weight=1)
 
         self.location_entry = ttk.Entry(f, textvariable=self.scan_root, font=FONT)
         self.location_entry.grid(row=0, column=0, sticky="ew", ipady=2)
-        ttk.Button(f, text="Browse…", style="Secondary.TButton", command=self._browse).grid(
+        ttk.Button(f, text="+ Add", style="Secondary.TButton", command=self._add_typed).grid(
             row=0, column=1, padx=(8, 0)
         )
+        ttk.Button(f, text="Browse…", style="Secondary.TButton", command=self._browse).grid(
+            row=0, column=2, padx=(8, 0)
+        )
+        self.chips = tk.Frame(f, bg=C.card)
+        self.chips.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self._render_chips()
+
+        options = tk.Frame(f, bg=C.card)
+        options.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         image_text = "Also compare photos for visual similarity (slower)"
         if not IMAGE_HASH_AVAILABLE:
             image_text += "  (install Pillow + ImageHash to enable)"
         self.images_check = ttk.Checkbutton(
-            f, text=image_text, variable=self.do_images, style="Card.TCheckbutton"
+            options, text=image_text, variable=self.do_images, style="Card.TCheckbutton"
         )
-        self.images_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.images_check.pack(side="left")
         if not IMAGE_HASH_AVAILABLE:
             self.images_check.state(["disabled"])
+        self.across_check = ttk.Checkbutton(
+            options,
+            text="Only show duplicates found in more than one of these folders",
+            variable=self.across_only,
+            style="Card.TCheckbutton",
+            command=self._on_across_toggled,
+        )
+        self.across_check.pack(side="left", padx=(24, 0))
+        self._update_across_check()
 
         # Buttons on the left, live status beside them (saves vertical space).
         actions = tk.Frame(f, bg=C.card)
-        actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        actions.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         self.scan_btn = ttk.Button(
             actions, text="▶  Scan for duplicates", style="Primary.TButton", command=self.start_scan
         )
@@ -451,7 +484,7 @@ class DuplicateDetectorApp:
             status, textvariable=self.detail_var, font=FONT_SMALL, bg=C.card, fg=C.muted, anchor="w"
         ).pack(fill="x")
         self.progress = ttk.Progressbar(f, mode="determinate", style="Scan.Horizontal.TProgressbar")
-        self.progress.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.progress.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
 
     def _build_stats(self, body: ttk.Frame) -> None:
         row = ttk.Frame(body)
@@ -500,6 +533,13 @@ class DuplicateDetectorApp:
             command=self.clear_selection,
         )
         self.clear_btn.pack(side="left", padx=(6, 0))
+        self.select_in_btn = ttk.Menubutton(
+            bar, text="Select copies in ▾", style="Small.Secondary.TButton"
+        )
+        self.select_in_menu = tk.Menu(self.select_in_btn, tearoff=False)
+        self.select_in_btn["menu"] = self.select_in_menu
+        self.select_in_btn.pack(side="left", padx=(6, 0))
+        self.select_in_btn.state(["disabled"])
         self.selection_var = tk.StringVar(value="No files selected")
         self.selection_label = tk.Label(
             bar, textvariable=self.selection_var, font=FONT, bg=C.card, fg=C.muted
@@ -542,6 +582,7 @@ class DuplicateDetectorApp:
                 ("copies", "Copies", 70),
                 ("size", "File size", 100),
                 ("wasted", "Extra space", 110),
+                ("found", "Found in", 170),
                 ("modified", "Modified", 140),
             ],
         )
@@ -551,6 +592,7 @@ class DuplicateDetectorApp:
                 ("#0", "Pair / file", 600),
                 ("distance", "Distance", 90),
                 ("size", "File size", 100),
+                ("found", "Found in", 170),
                 ("modified", "Modified", 140),
             ],
         )
@@ -603,7 +645,7 @@ class DuplicateDetectorApp:
         self.delete_btn.pack(side="left")
         self.delete_btn.state(["disabled"])
         self.export_btn = ttk.Button(
-            bottom, text="⤓  Export report (CSV)", style="Success.TButton", command=self.export_csv
+            bottom, text="Export report (CSV)", style="Success.TButton", command=self.export_csv
         )
         self.export_btn.pack(side="left", padx=(8, 0))
         self.details_btn = ttk.Button(
@@ -625,31 +667,133 @@ class DuplicateDetectorApp:
         ).pack(side="right")
 
     def _bind_keys(self) -> None:
-        self.location_entry.bind("<Return>", lambda _e: self.start_scan())
+        self.location_entry.bind("<Return>", lambda _e: self._on_entry_return())
         self.root.bind("<Escape>", lambda _e: self.cancel_scan())
         self.root.bind("<Control-f>", lambda _e: self.filter_entry.focus_set())
         self.root.bind("<Control-e>", lambda _e: self.export_csv())
 
     def _browse(self) -> None:
-        initial = self.scan_root.get() if os.path.isdir(self.scan_root.get()) else None
-        path = filedialog.askdirectory(initialdir=initial)
+        last = self.folders[-1] if self.folders else ""
+        path = filedialog.askdirectory(initialdir=last if os.path.isdir(last) else None)
         if path:
-            self.scan_root.set(os.path.normpath(path))
+            self.add_folder(path)
+
+    def _on_entry_return(self) -> None:
+        # Enter adds a typed folder; on an empty box it starts the scan.
+        if self.scan_root.get().strip():
+            self._add_typed()
+        else:
+            self.start_scan()
+
+    def _add_typed(self) -> None:
+        text = self.scan_root.get().strip().strip('"')
+        if not text:
+            return
+        if not os.path.isdir(text):
+            messagebox.showerror("Folder not found", f"This folder does not exist:\n{text}")
+            return
+        self.add_folder(text)
+        self.scan_root.set("")
+
+    def add_folder(self, path: str) -> None:
+        path = os.path.normpath(os.path.abspath(path))
+        if all(os.path.normcase(path) != os.path.normcase(f) for f in self.folders):
+            self.folders.append(path)
+        self._render_chips()
+        self._update_across_check()
+
+    def remove_folder(self, path: str) -> None:
+        if self.busy:
+            return
+        self.folders = [f for f in self.folders if f != path]
+        self._render_chips()
+        self._update_across_check()
+
+    def _render_chips(self) -> None:
+        for child in self.chips.winfo_children():
+            child.destroy()
+        if not self.folders:
+            tk.Label(
+                self.chips,
+                text="No folders yet: type a path above and press Enter, or click Browse…",
+                font=FONT_SMALL,
+                bg=C.card,
+                fg=C.muted,
+            ).pack(side="left")
+            return
+        roots, _ = normalize_roots(self.folders)
+        kept = {os.path.normcase(r) for r in roots}
+        for path in self.folders:
+            nested = os.path.normcase(os.path.abspath(path)) not in kept
+            chip = tk.Frame(
+                self.chips,
+                bg=C.group_row,
+                highlightthickness=1,
+                highlightbackground=C.neutral_hover,
+            )
+            chip.pack(side="left", padx=(0, 6))
+            text = path if len(path) <= 48 else "…" + path[-47:]
+            if nested:
+                text += "  (inside another folder)"
+            tk.Label(
+                chip, text=text, font=FONT_SMALL, bg=C.group_row, fg=C.muted if nested else C.text
+            ).pack(side="left", padx=(8, 2), pady=2)
+            close = tk.Label(
+                chip, text="✕", font=FONT_SMALL, bg=C.group_row, fg=C.muted, cursor="hand2"
+            )
+            close.pack(side="left", padx=(2, 6))
+            close.bind("<Button-1>", partial(self._on_chip_close, path))
+
+    def _on_chip_close(self, path: str, _event: tk.Event[Any]) -> None:
+        self.remove_folder(path)
+
+    def _update_across_check(self) -> None:
+        if len(normalize_roots(self.folders)[0]) > 1 or len(self.result.roots) > 1:
+            self.across_check.state(["!disabled"])
+        else:
+            self.across_only.set(False)
+            self.across_check.state(["disabled"])
+
+    def _on_across_toggled(self) -> None:
+        self._refresh_results()
+        self._update_stats()
+
+    def _across(self) -> bool:
+        return self.across_only.get() and len(self.result.roots) > 1
+
+    def _root_label(self, root: str) -> str:
+        return self._root_labels.get(root, root)
+
+    def _make_root_labels(self, roots: Sequence[str]) -> dict[str, str]:
+        """Short names for scan folders (folder name, or full path when names clash)."""
+        names = {r: os.path.basename(r.rstrip("\\/")) or r for r in roots}
+        counts: defaultdict[str, int] = defaultdict(int)
+        for name in names.values():
+            counts[name.lower()] += 1
+        return {r: (n if counts[n.lower()] == 1 else r) for r, n in names.items()}
+
+    def _found_in(self, files: Iterable[FileRecord]) -> str:
+        return ", ".join(sorted({self._root_label(r.source) for r in files}, key=str.lower))
 
     # ------------------------------------------------------------ scan
     def start_scan(self) -> None:
         if self.busy:
             return
-        location = self.scan_root.get().strip()
-        if not location:
-            messagebox.showwarning("Location required", "Select a folder or drive to scan.")
+        if self.scan_root.get().strip():
+            self._add_typed()  # a path typed but not yet added
+            if self.scan_root.get().strip():
+                return  # it was invalid; the error was shown
+        if not self.folders:
+            messagebox.showwarning("Folder required", "Add at least one folder or drive to scan.")
             return
-        if not os.path.isdir(location):
+        missing = [f for f in self.folders if not os.path.isdir(f)]
+        if missing:
             messagebox.showerror(
-                "Invalid location",
-                "The selected folder or drive does not exist or cannot be accessed.",
+                "Folder not found",
+                "These folders do not exist or cannot be accessed:\n\n" + "\n".join(missing),
             )
             return
+        folders, self._skipped_roots = normalize_roots(self.folders)
         self._save_settings()
         self.scanning = True
         self._scan_compare_images = self.do_images.get()
@@ -670,7 +814,7 @@ class DuplicateDetectorApp:
         self._scan_started = time.monotonic()
         self._tick()
         threading.Thread(
-            target=self._scan_worker, args=(location, self._scan_compare_images), daemon=True
+            target=self._scan_worker, args=(folders, self._scan_compare_images), daemon=True
         ).start()
 
     def cancel_scan(self) -> None:
@@ -680,10 +824,10 @@ class DuplicateDetectorApp:
         self.cancel_btn.state(["disabled"])
         self._set_stage("Cancelling…", C.warn)
 
-    def _scan_worker(self, location: str, compare_images: bool) -> None:
+    def _scan_worker(self, folders: list[str], compare_images: bool) -> None:
         try:
             result = scan(
-                location,
+                folders,
                 compare_images=compare_images,
                 cancel=self.cancel_event,
                 on_progress=lambda p: self.events.put(("progress", p)),
@@ -774,7 +918,10 @@ class DuplicateDetectorApp:
         self._file_num = {r.path: n for n, r in enumerate(result.records)}
         self._group_num = {_group_key(g): n for n, g in enumerate(result.exact_groups, 1)}
         self._pair_num = {_pair_key(p): n for n, p in enumerate(result.similar_pairs, 1)}
+        self._root_labels = self._make_root_labels(result.roots)
         self.selected.clear()
+        self._update_across_check()
+        self._build_select_in_menu()
         self._scan_ended("Done.Horizontal.TProgressbar")
         self._refresh_results()
         self._update_stats()
@@ -788,6 +935,11 @@ class DuplicateDetectorApp:
         else:
             self._set_stage("✔  Scan complete: no duplicates found", C.success)
             detail = f"All {len(result.records):,} files are unique."
+        if len(result.roots) > 1:
+            across = len(result.across_folders().exact_groups)
+            detail += f"  {across:,} groups have copies in more than one folder."
+        for inner, outer in getattr(self, "_skipped_roots", []):
+            detail += f"  {inner} is inside {outer}, so it was scanned once."
         if result.errors:
             detail += f"  {len(result.errors):,} items could not be read (see View errors)."
         self.detail_var.set(detail)
@@ -798,8 +950,12 @@ class DuplicateDetectorApp:
             self.notebook.select(1)
         self.root.bell()
 
+    def _view(self) -> ScanResult:
+        """The results as shown: limited to cross-folder duplicates when that option is on."""
+        return self.result.across_folders() if self._across() else self.result
+
     def _update_stats(self) -> None:
-        result = self.result
+        result = self._view()
         stats = {
             "files": f"{len(result.records):,}",
             "groups": f"{len(result.exact_groups):,}",
@@ -887,8 +1043,11 @@ class DuplicateDetectorApp:
             enumerate(self.result.exact_groups), key=EXACT_SORT_KEYS[column], reverse=reverse
         )
         shown: list[str] = []
+        across = self._across()
         for idx, group in groups:
             if needle and not any(needle in r.path.lower() for r in group):
+                continue
+            if across and not spans_folders(group):
                 continue
             size = group[0].size
             num = self._group_num.get(_group_key(group), idx + 1)
@@ -899,7 +1058,13 @@ class DuplicateDetectorApp:
                 idx,
                 iid,
                 f" Group {num}   {group[0].name}",
-                (len(group), human_size(size), human_size(size * (len(group) - 1)), ""),
+                (
+                    len(group),
+                    human_size(size),
+                    human_size(size * (len(group) - 1)),
+                    self._found_in(group),
+                    "",
+                ),
             )
             shown.append(iid)
         self._exact_shown = len(shown)
@@ -911,8 +1076,11 @@ class DuplicateDetectorApp:
             enumerate(self.result.similar_pairs), key=SIMILAR_SORT_KEYS[column], reverse=reverse
         )
         shown: list[str] = []
+        across = self._across()
         for idx, pair in pairs:
             if needle and not any(needle in r.path.lower() for r in (pair.left, pair.right)):
+                continue
+            if across and pair.left.source == pair.right.source:
                 continue
             num = self._pair_num.get(_pair_key(pair), idx + 1)
             iid = f"p{num}"
@@ -923,7 +1091,7 @@ class DuplicateDetectorApp:
                 idx,
                 iid,
                 f" Pair {num}   {pair.left.name}  ↔  {pair.right.name}   ({label})",
-                (pair.distance, "", ""),
+                (pair.distance, "", self._found_in((pair.left, pair.right)), ""),
             )
             shown.append(iid)
         self._similar_shown = len(shown)
@@ -939,10 +1107,11 @@ class DuplicateDetectorApp:
         for j, rec in enumerate(self._group_files[iid]):
             fid = f"{iid}:f{self._file_num.get(rec.path, j)}"
             values: tuple[str, ...]
+            found = self._root_label(rec.source)
             if kind == "exact":
-                values = ("", human_size(rec.size), "", format_time(rec.mtime))
+                values = ("", human_size(rec.size), "", found, format_time(rec.mtime))
             else:
-                values = ("", human_size(rec.size), format_time(rec.mtime))
+                values = ("", human_size(rec.size), found, format_time(rec.mtime))
             checked = rec.path in self.selected
             tree.insert(
                 iid,
@@ -1059,6 +1228,35 @@ class DuplicateDetectorApp:
         ]
         self.set_selected(paths, True)
 
+    def select_copies_in(self, root: str) -> None:
+        """Select files in ``root`` that also have a copy in another chosen folder.
+
+        Only exact duplicates count, and a copy outside ``root`` always stays
+        unselected, so this never selects every copy of a file.
+        """
+        needle = self.filter_var.get().strip().lower()
+        paths: list[str] = []
+        for group in self._view().exact_groups:
+            if needle and not any(needle in r.path.lower() for r in group):
+                continue
+            inside = [r for r in group if r.source == root]
+            if inside and len(inside) < len(group):
+                paths.extend(r.path for r in inside)
+        self.set_selected(paths, True)
+        self.notebook.select(0)
+        if not paths:
+            self.detail_var.set(
+                f"Nothing in {self._root_label(root)} also has a copy in another chosen folder."
+            )
+
+    def _build_select_in_menu(self) -> None:
+        self.select_in_menu.delete(0, "end")
+        for root in self.result.roots:
+            self.select_in_menu.add_command(
+                label=f"{self._root_label(root)}   ({root})",
+                command=partial(self.select_copies_in, root),
+            )
+
     def clear_selection(self) -> None:
         self.set_selected(list(self.selected), False)
 
@@ -1073,6 +1271,8 @@ class DuplicateDetectorApp:
             self.selection_var.set("No files selected")
             self.selection_label.config(fg=C.muted)
         self.select_all_btn.state(["!disabled"] if has_results and not self.busy else ["disabled"])
+        multi = has_results and len(self.result.roots) > 1 and not self.busy
+        self.select_in_btn.state(["!disabled"] if multi else ["disabled"])
         self.clear_btn.state(["!disabled"] if count and not self.busy else ["disabled"])
         self.delete_btn.state(["!disabled"] if count and not self.busy else ["disabled"])
         self.delete_btn.config(
@@ -1526,7 +1726,7 @@ class DuplicateDetectorApp:
     def _save_settings(self) -> None:
         save_settings(
             self.settings_file,
-            {"last_folder": self.scan_root.get().strip(), "compare_images": self.do_images.get()},
+            {"folders": self.folders, "compare_images": self.do_images.get()},
         )
 
     def on_close(self) -> None:

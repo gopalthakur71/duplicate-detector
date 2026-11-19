@@ -13,18 +13,6 @@ from duplicate_detector.scanner import FileRecord, Progress, ScanResult, Similar
 from .conftest import MakeFile
 
 
-@pytest.fixture(scope="session")
-def tk_root() -> Iterator[tk.Tk]:
-    # One shared root: creating many Tk interpreters in a row is unreliable on Windows.
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip(f"no display available: {exc}")
-    root.withdraw()
-    yield root
-    root.destroy()
-
-
 @pytest.fixture
 def app(tk_root: tk.Tk, tmp_path: Path) -> Iterator[gui.DuplicateDetectorApp]:
     application = gui.DuplicateDetectorApp(tk_root, settings_file=tmp_path / "settings.json")
@@ -187,10 +175,11 @@ def test_file_action_reports_missing_files(
 
 
 def test_settings_are_remembered(app: gui.DuplicateDetectorApp, tmp_path: Path) -> None:
-    app.scan_root.set(str(tmp_path))
+    app.folders = []
+    app.add_folder(str(tmp_path))
     app._save_settings()
 
-    assert gui.load_settings(tmp_path / "settings.json")["last_folder"] == str(tmp_path)
+    assert gui.load_settings(tmp_path / "settings.json")["folders"] == [str(tmp_path)]
 
 
 def test_load_settings_tolerates_bad_file(tmp_path: Path) -> None:
