@@ -22,6 +22,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Python 3.11 or newer is now required (3.10 reached end of life in October 2026).
 
 ### Fixed
+- CSV reports could contain live spreadsheet formulas if a scanned file name started with `=`, `+`, `-` or `@` (CSV injection). Such cells now start with an apostrophe.
 - Photos that look identical but differ in bytes (pHash distance 0) were not reported as similar.
 - Folders that could not be opened were silently skipped. They are now reported as errors.
 - An unexpected error during a scan left the **Scan** button disabled.

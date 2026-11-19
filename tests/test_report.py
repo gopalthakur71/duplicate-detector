@@ -5,7 +5,9 @@ import io
 from datetime import datetime
 from pathlib import Path
 
-from duplicate_detector.report import FIELDS, default_report_name, write_csv
+import pytest
+
+from duplicate_detector.report import FIELDS, default_report_name, safe_cell, write_csv
 from duplicate_detector.scanner import FileRecord, ScanResult, SimilarPair, scan
 
 from .conftest import MakeFile
@@ -50,6 +52,26 @@ def test_csv_lists_similar_pairs_and_handles_unicode() -> None:
 
     assert [r["filename"] for r in rows] == ["фото.jpg", "写真.jpg"]
     assert rows[0]["possible_visual_matches"] == "possible_pair_1_distance_3"
+
+
+def test_formula_like_names_are_neutralized() -> None:
+    evil = FileRecord(source="r", path='=HYPERLINK("evil")', size=1, mtime=0)
+    plain = FileRecord(source="r", path="normal.txt", size=1, mtime=0)
+    result = ScanResult(records=[evil, plain], errors=["@SUM(1): access denied"])
+    buf = io.StringIO(newline="")
+
+    write_csv(result, buf)
+    rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+
+    assert rows[0]["filename"] == '\'=HYPERLINK("evil")'
+    assert rows[0]["path"].startswith("'=")
+    assert rows[1]["filename"] == "normal.txt"
+    assert rows[2]["path"] == "'@SUM(1): access denied"
+
+
+@pytest.mark.parametrize("prefix", ["=", "+", "-", "@", "\t", "\r"])
+def test_safe_cell_prefixes(prefix: str) -> None:
+    assert safe_cell(prefix + "x") == "'" + prefix + "x"
 
 
 def test_default_report_name() -> None:

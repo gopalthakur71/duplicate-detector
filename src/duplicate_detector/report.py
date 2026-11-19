@@ -23,6 +23,19 @@ FIELDS = [
 ]
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def safe_cell(value: str) -> str:
+    """Stop spreadsheet apps from running file names as formulas (CSV injection).
+
+    Scanned file names are untrusted: a file named ``=HYPERLINK(...)`` would
+    otherwise become a live formula when the report is opened in Excel. A
+    leading apostrophe makes the cell plain text.
+    """
+    return "'" + value if value.startswith(_FORMULA_PREFIXES) else value
+
+
 def default_report_name(now: datetime | None = None) -> str:
     return f"duplicate_report_{(now or datetime.now()):%Y%m%d_%H%M%S}.csv"
 
@@ -57,16 +70,16 @@ def _write(result: ScanResult, f: TextIO) -> None:
     for r in result.records:
         writer.writerow(
             {
-                "source": r.source,
-                "path": r.path,
-                "filename": r.name,
+                "source": safe_cell(r.source),
+                "path": safe_cell(r.path),
+                "filename": safe_cell(r.name),
                 "size_bytes": r.size,
                 "modified_time": datetime.fromtimestamp(r.mtime).isoformat(sep=" "),
                 "sha256": r.sha256 or "",
                 "exact_duplicate_group": exact_map.get(r.path, ""),
                 "possible_visual_matches": "; ".join(similar_map.get(r.path, [])),
-                "notes": r.note,
+                "notes": safe_cell(r.note),
             }
         )
     for err in result.errors:
-        writer.writerow({"source": "ERROR", "path": err})
+        writer.writerow({"source": "ERROR", "path": safe_cell(err)})
