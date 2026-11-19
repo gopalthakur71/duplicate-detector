@@ -2,9 +2,11 @@
 
 Thanks for helping improve Local Duplicate Detector.
 
-## Ground rule: read-only
+## Ground rule: the user decides
 
-The scanner must never write to, move, rename, or delete scanned files. Any change that touches files beyond opening them for reading needs a design discussion in an issue first.
+- Scanning (`scanner.py`) must stay read-only: it only opens files for reading.
+- Files may only be removed by `deleter.py`, only when the user selected them and confirmed, and only by moving them to the Recycle Bin (never a permanent delete).
+- Never add automatic selection or deletion without an explicit user action.
 
 ## Setup
 

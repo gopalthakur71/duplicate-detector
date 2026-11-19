@@ -12,4 +12,4 @@
 - [ ] `uv run ruff check .`, `uv run ruff format --check .` and `uv run mypy` pass
 - [ ] Tests added or updated for behavior changes
 - [ ] `CHANGELOG.md` updated under **Unreleased**
-- [ ] The app still never deletes, moves, renames, or modifies scanned files
+- [ ] Scanning stays read-only; files are only removed after the user selects and confirms, and only to the Recycle Bin

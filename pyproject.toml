@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "duplicate-detector"
 dynamic = ["version"]
-description = "A read-only desktop tool that finds duplicate files and similar photos."
+description = "Find duplicate files and similar photos, then choose which copies to send to the Recycle Bin."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -29,7 +29,7 @@ classifiers = [
     "Topic :: Utilities",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = ["Send2Trash>=2.2.0"]
 
 [project.optional-dependencies]
 images = ["Pillow>=13.0", "ImageHash>=4.3.2"]
@@ -51,6 +51,7 @@ dev = [
     "pytest-cov>=7.1",
     "ruff>=0.17.5",
     "mypy>=2.4",
+    "types-Send2Trash>=2.2.0",
     "pre-commit>=4.7",
 ]
 

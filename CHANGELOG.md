@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- **Delete duplicates you choose.** Every file row has a checkbox. Tick files one at a time, tick a group to select all its files, or use **Select all** and **Clear selection**. A live counter shows how many files and bytes are selected.
+- **Delete selected…** moves the selected files to the Recycle Bin after a confirmation that lists every file. Nothing is selected or deleted automatically.
+  - If every copy in a group is selected, the confirmation warns you and offers **Keep one copy of each**, which keeps the oldest copy.
+  - Files that changed or disappeared since the scan are skipped.
+  - Files the Recycle Bin can't take are left in place and reported.
+  - Each deletion is appended to `%APPDATA%\DuplicateDetector\deletion_log.csv`.
+  - Results, stats and the CSV report update after deleting. Deleted files are noted in the report.
+- Keyboard: Space toggles the selected row, and Delete opens the delete confirmation.
+- New dependency: `Send2Trash`, for moving files to the Recycle Bin.
 - Redesigned window: colored buttons with hover states (blue Scan, red Cancel, green Export), a header bar, and summary cards for files, duplicate groups, extra space, similar pairs and unreadable items.
 - Results are expandable groups with one row per file. Click a column heading to sort, or type to filter by path.
 - Double-click a file to open it. Right-click for **Show in folder**, **Open file** and **Copy path**.

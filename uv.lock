@@ -227,6 +227,9 @@ wheels = [
 [[package]]
 name = "duplicate-detector"
 source = { editable = "." }
+dependencies = [
+    { name = "send2trash" },
+]
 
 [package.optional-dependencies]
 images = [
@@ -241,12 +244,14 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "types-send2trash" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "imagehash", marker = "extra == 'images'", specifier = ">=4.3.2" },
     { name = "pillow", marker = "extra == 'images'", specifier = ">=13.0" },
+    { name = "send2trash", specifier = ">=2.2.0" },
 ]
 provides-extras = ["images"]
 
@@ -257,6 +262,7 @@ dev = [
     { name = "pytest", specifier = ">=9.2" },
     { name = "pytest-cov", specifier = ">=7.1" },
     { name = "ruff", specifier = ">=0.17.5" },
+    { name = "types-send2trash", specifier = ">=2.2.0" },
 ]
 
 [[package]]
@@ -1208,6 +1214,24 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/cf/d9/135be205d9de8783193aff9cc3bf483a03a38e4b29432c954e8cb66ac14e/scipy-1.18.1-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:179ce34a8d0fe273d8883ba59e17e052247d08973dfcb743ca52bb1cce2d60b0", size = 37521946, upload-time = "2026-08-21T23:28:35.245Z" },
     { url = "https://files.pythonhosted.org/packages/5c/a2/5b7d5270621ab7cfa3f7766067bf95dc360b5efb6394694e8143b4156e2b/scipy-1.18.1-cp315-cp315t-win_amd64.whl", hash = "sha256:5632e3ae3d09197c446310cd5187de63e28448ce22f0f67b2b93d97503c0c230", size = 37408295, upload-time = "2026-08-21T23:28:40.724Z" },
     { url = "https://files.pythonhosted.org/packages/63/ad/741c19fcb66755ff953daf9243af8480e4bf3d7fbe57583c178c7d2b6b51/scipy-1.18.1-cp315-cp315t-win_arm64.whl", hash = "sha256:eda632a7981f69730d6281f451db9c1c370993a2c0d7ddb43e2a809a2862b83a", size = 25319710, upload-time = "2026-08-21T23:28:45.713Z" },
+]
+
+[[package]]
+name = "send2trash"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/9c/41c11853a5fb67b4639993a628182d326ffe4327eb28a125d202fb49950f/send2trash-2.2.0.tar.gz", hash = "sha256:e0ac412073f7984288908d9d8b8d13c82be69a615bb513d948fa2f053447970a", size = 19703, upload-time = "2026-11-12T00:35:19.813Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/de/7a9e77bd4c5f6eb11d90eb75807c1e1f0ea54997b05ae86d6fc5fa080c04/send2trash-2.2.0-py3-none-any.whl", hash = "sha256:7f540296d59744fbf2f88b0d6f3a484af78c94d3c20e0875a4d5eed61aef037c", size = 17436, upload-time = "2026-11-12T00:35:18.674Z" },
+]
+
+[[package]]
+name = "types-send2trash"
+version = "2.2.0.20261114"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/f1/e70ff3684fb87f682aff64a8df49ee0ff4bcee161196653b904b65ec6a6a/types_send2trash-2.2.0.20261114.tar.gz", hash = "sha256:175e7bbb72543b03e3d76c3f6dac96027e9b443d78b4770e1eddd13c5b7f60f8", size = 7847, upload-time = "2026-11-14T08:13:32.427Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/61/b69ea1675194976a80de6ace450ab98faea5062f88f6b677bc9909d6c35c/types_send2trash-2.2.0.20261114-py3-none-any.whl", hash = "sha256:71165f6eea4cf57d8c0181429e3f86e3bdbf2224635dcf5f6f9715b60607ad9f", size = 8323, upload-time = "2026-11-14T08:13:31.678Z" },
 ]
 
 [[package]]

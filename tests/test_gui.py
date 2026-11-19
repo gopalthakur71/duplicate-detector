@@ -219,3 +219,117 @@ def test_is_risky() -> None:
     assert gui.is_risky("C:/x/Setup.EXE")
     assert gui.is_risky("run.bat")
     assert not gui.is_risky("photo.jpg")
+
+
+# ----------------------------------------------------------- deletion
+def test_nothing_is_selected_after_a_scan(app: gui.DuplicateDetectorApp, data: Path) -> None:
+    app._show_results(scan(data))
+    assert app.selected == set()
+    assert "disabled" in app.delete_btn.state()
+    assert "disabled" not in app.select_all_btn.state()
+
+
+def test_toggle_file_and_group(app: gui.DuplicateDetectorApp, data: Path) -> None:
+    app._show_results(scan(data))
+    group = app.exact_tree.get_children()[0]
+    app._populate(app.exact_tree, group)
+    first, second = _children(app.exact_tree, group)
+
+    app.toggle(first)
+    assert app.selected == {app._file_by_iid[first].path}
+    assert str(app._check_images["partial"]) in str(app.exact_tree.item(group, "image"))
+    assert "1 files selected" in app.selection_var.get()
+    assert "disabled" not in app.delete_btn.state()
+
+    app.toggle(group)  # partly selected group -> select every file
+    assert app.selected == {app._file_by_iid[first].path, app._file_by_iid[second].path}
+
+    app.toggle(group)  # fully selected group -> unselect every file
+    assert app.selected == set()
+
+
+def test_select_all_and_clear(app: gui.DuplicateDetectorApp, data: Path) -> None:
+    app._show_results(scan(data))
+    app.select_all()
+    assert len(app.selected) == 4
+    app.clear_selection()
+    assert app.selected == set()
+
+
+def test_delete_moves_selected_and_updates_results(
+    app: gui.DuplicateDetectorApp, data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app._show_results(scan(data))
+    victim = next(r for r in app.result.records if r.name == "a copy.jpg")
+    app.set_selected([victim.path], True)
+    asked: list[int] = []
+
+    def confirm(records: list[FileRecord], at_risk: list[list[FileRecord]]) -> str:
+        asked.append(len(records))
+        assert at_risk == []
+        return "delete"
+
+    monkeypatch.setattr(app, "_confirm_delete", confirm)
+
+    app.delete_selected()
+    _wait_for_delete(app)
+
+    assert asked == [1]
+    assert not Path(victim.path).exists()
+    assert app.selected == set()
+    assert len(app.result.exact_groups) == 1  # that group has one copy left
+    assert app.stat_vars["groups"].get() == "1"
+    assert "Moved 1 files" in app.stage_var.get()
+    assert app.log_file.exists()
+
+
+def test_cancel_in_confirmation_deletes_nothing(
+    app: gui.DuplicateDetectorApp, data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app._show_results(scan(data))
+    app.select_all()
+    monkeypatch.setattr(app, "_confirm_delete", lambda records, at_risk: "cancel")
+
+    app.delete_selected()
+
+    assert not app.deleting
+    assert all(Path(p).exists() for p in app.selected)
+    assert len(app.selected) == 4
+
+
+def test_keep_one_copy_when_every_copy_is_selected(
+    app: gui.DuplicateDetectorApp, data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app._show_results(scan(data))
+    app.select_all()
+    warned: list[int] = []
+
+    def confirm(records: list[FileRecord], at_risk: list[list[FileRecord]]) -> str:
+        warned.append(len(at_risk))
+        return "keep_one"
+
+    monkeypatch.setattr(app, "_confirm_delete", confirm)
+
+    app.delete_selected()
+    _wait_for_delete(app)
+
+    assert warned == [2]
+    remaining = [p for p in (data / "photos/a.jpg", data / "backup/a copy.jpg") if p.exists()]
+    assert len(remaining) == 1
+    remaining = [p for p in (data / "docs/report.pdf", data / "old/report.pdf") if p.exists()]
+    assert len(remaining) == 1
+    assert app.result.exact_groups == []
+
+
+def _wait_for_delete(app: gui.DuplicateDetectorApp, timeout: float = 10) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while app.deleting and time.monotonic() < deadline:
+        try:
+            kind, *payload = app.events.get(timeout=0.1)
+        except Exception:
+            continue
+        if kind == "deleted":
+            app._finish_delete(payload[0])
+    assert not app.deleting
