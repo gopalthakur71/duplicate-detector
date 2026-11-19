@@ -14,7 +14,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **View errors** window, elapsed-time display, and scan percentage.
 - Keyboard shortcuts: Enter (scan), Esc (cancel), Ctrl+F (filter), Ctrl+E (export).
 - The last folder and photo option are remembered (`%APPDATA%\DuplicateDetector\settings.json`).
-- Asks before quitting while a scan is running. Sharp text on high-DPI screens.
+- Asks before quitting while a scan is running. Sharp text and correctly scaled sizes on high-DPI screens.
+- Programs, scripts and shortcuts (`.exe`, `.bat`, `.ps1`, `.lnk`…) are never run by a double-click. The app asks first and shows the file in its folder instead.
+- File rows are built only when a group is opened, so sorting and filtering stay fast on large scans and keep expanded groups and the selection. Photo previews load in the background.
 
 ### Fixed
 - The progress bar showed empty when a scan finished.
