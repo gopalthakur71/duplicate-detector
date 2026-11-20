@@ -6,6 +6,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- **The window no longer freezes ("Not Responding") after a large scan.** With tens of thousands of results, Select all, Clear selection, sorting, filtering and deleting could take minutes or hours, because every row shared the same checkbox images in Tk. At 47,838 groups and 169,273 similar photo pairs, Select all now takes about 1 second and Clear selection about 2 seconds.
+
 ## [0.3.0] - 2026-11-19
 
 ### Added

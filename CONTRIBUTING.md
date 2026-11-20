@@ -43,7 +43,10 @@ New behavior goes into `scanner.py`, with tests in `tests/`. Use the `tmp_path` 
 
 ## Pull requests
 
-1. Branch from `main`.
+1. Never commit directly to `main`. Every change, including small bug fixes, goes on its own branch from `main` and is merged through a pull request. Name the branch by kind:
+   - `fix/<short-description>` for bug fixes (for example `fix/large-results-freeze`)
+   - `feature/<short-description>` for new features
+   - `docs/<short-description>` or `chore/<short-description>` for documentation, tooling and maintenance
 2. Keep each PR focused, and add tests for behavior changes.
 3. Add a line under **Unreleased** in `CHANGELOG.md`.
 4. Use clear commit messages in the imperative mood ("Add cancel button").
