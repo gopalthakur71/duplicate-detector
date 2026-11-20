@@ -50,6 +50,8 @@ FILTER_DELAY_MS = 250
 #: When filtering, matching groups are expanded automatically only up to this many.
 AUTO_EXPAND_LIMIT = 200
 THUMBNAIL_SIZE = 360
+#: Identical copies of each checkbox image per tree (see DuplicateDetectorApp.__init__).
+CHECK_IMAGE_COPIES = 64
 PLACEHOLDER = "_"
 #: How many paths the delete confirmation lists before summarizing.
 CONFIRM_LIST_LIMIT = 200
@@ -285,16 +287,32 @@ class DuplicateDetectorApp:
         self.filter_var = tk.StringVar()
         self.filter_var.trace_add("write", lambda *_: self._schedule_filter())
 
+        # Tk keeps a list of every row that shows an image, and removing a row from
+        # that list (deleting the row or changing its checkbox) walks it. With one
+        # shared image per state, large scans (100,000+ rows) froze the window for
+        # minutes. Each tree therefore gets its own pool of identical copies, handed
+        # out in turn, so every list stays short.
         box = self.px(14)
-        self._check_images: dict[CheckState, tk.PhotoImage] = {
-            state: make_checkbox(self.root, box, state) for state in ("off", "on", "partial")
-        }
+        self._check_images: dict[str, dict[CheckState, list[tk.PhotoImage]]] = {}
+        for kind in ("exact", "similar"):
+            self._check_images[kind] = {}
+            for state in ("off", "on", "partial"):
+                first = make_checkbox(self.root, box, state)
+                pool = [first] + [first.copy() for _ in range(CHECK_IMAGE_COPIES - 1)]
+                self._check_images[kind][state] = pool
+        self._check_turn = 0
 
         self._setup_styles()
         self._build_ui()
         self._bind_keys()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(POLL_MS, self._process_events)
+
+    def _check_image(self, tree: ttk.Treeview, state: CheckState) -> tk.PhotoImage:
+        """A checkbox image for a row of ``tree`` (see the pool set up in ``__init__``)."""
+        pool = self._check_images["exact" if tree is self.exact_tree else "similar"][state]
+        self._check_turn += 1
+        return pool[self._check_turn % len(pool)]
 
     def px(self, value: float) -> int:
         return round(value * self.scale)
@@ -1053,7 +1071,7 @@ class DuplicateDetectorApp:
             iid=iid,
             text=text,
             values=values,
-            image=self._check_images[self._group_state(files)],
+            image=self._check_image(tree, self._group_state(files)),
             tags=("group",),
         )
         tree.insert(iid, "end", iid=f"{iid}:{PLACEHOLDER}", text="…")
@@ -1144,7 +1162,7 @@ class DuplicateDetectorApp:
                 iid=fid,
                 text=f" {rec.path}",
                 values=values,
-                image=self._check_images["on" if checked else "off"],
+                image=self._check_image(tree, "on" if checked else "off"),
                 tags=("checked",) if checked else (),
             )
             self._file_by_iid[fid] = rec
@@ -1208,13 +1226,14 @@ class DuplicateDetectorApp:
                 tree = self.exact_tree if fid.startswith("g") else self.similar_tree
                 tree.item(
                     fid,
-                    image=self._check_images["on" if checked else "off"],
+                    image=self._check_image(tree, "on" if checked else "off"),
                     tags=("checked",) if checked else (),
                 )
             groups.update(self._group_iids_by_path.get(path, ()))
         for gid in groups:
             tree = self.exact_tree if gid.startswith("g") else self.similar_tree
-            tree.item(gid, image=self._check_images[self._group_state(self._group_files[gid])])
+            state = self._group_state(self._group_files[gid])
+            tree.item(gid, image=self._check_image(tree, state))
 
     def toggle(self, iid: str) -> None:
         """Toggle a file row, or every file in a group row."""

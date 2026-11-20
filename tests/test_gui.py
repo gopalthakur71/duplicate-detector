@@ -218,6 +218,36 @@ def test_nothing_is_selected_after_a_scan(app: gui.DuplicateDetectorApp, data: P
     assert "disabled" not in app.select_all_btn.state()
 
 
+def test_result_trees_do_not_share_checkbox_images(
+    app: gui.DuplicateDetectorApp, make_file: MakeFile, tmp_path: Path
+) -> None:
+    # Tk slows down badly when two widgets show many rows with the same image:
+    # releasing the image in one tree costs time per row in the other. With
+    # tens of thousands of results this froze the window, so each tree gets
+    # its own images.
+    make_file("d/a.jpg", b"same")
+    make_file("d/b.jpg", b"same")
+    result = scan(tmp_path / "d")
+    a, b = result.exact_groups[0]
+    result.similar_pairs = [SimilarPair(a, b, 1)]
+    app._show_results(result)
+
+    exact_img = str(app.exact_tree.item(app.exact_tree.get_children()[0], "image")[0])
+    similar_img = str(app.similar_tree.item(app.similar_tree.get_children()[0], "image")[0])
+    exact_names = {str(i) for pool in app._check_images["exact"].values() for i in pool}
+    similar_names = {str(i) for pool in app._check_images["similar"].values() for i in pool}
+    assert exact_img in exact_names
+    assert similar_img in similar_names
+    assert not exact_names & similar_names
+
+
+def test_checkbox_rows_spread_over_image_copies(app: gui.DuplicateDetectorApp) -> None:
+    # Rows sharing one Tk image make changing any of them slower the more rows
+    # there are, so consecutive rows get different (identical-looking) copies.
+    used = {str(app._check_image(app.exact_tree, "off")) for _ in range(gui.CHECK_IMAGE_COPIES)}
+    assert len(used) == gui.CHECK_IMAGE_COPIES
+
+
 def test_toggle_file_and_group(app: gui.DuplicateDetectorApp, data: Path) -> None:
     app._show_results(scan(data))
     group = app.exact_tree.get_children()[0]
@@ -226,7 +256,8 @@ def test_toggle_file_and_group(app: gui.DuplicateDetectorApp, data: Path) -> Non
 
     app.toggle(first)
     assert app.selected == {app._file_by_iid[first].path}
-    assert str(app._check_images["partial"]) in str(app.exact_tree.item(group, "image"))
+    partial_imgs = {str(img) for img in app._check_images["exact"]["partial"]}
+    assert str(app.exact_tree.item(group, "image")[0]) in partial_imgs
     assert "1 files selected" in app.selection_var.get()
     assert "disabled" not in app.delete_btn.state()
 
